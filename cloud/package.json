@@ -1,0 +1,7 @@
+{
+  "name": "pitch-ledger-cloud-code",
+  "private": true,
+  "dependencies": {
+    "resend": "^4.7.0"
+  }
+}
