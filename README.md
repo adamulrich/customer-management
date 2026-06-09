@@ -101,4 +101,4 @@ Add these repository secrets before enabling the workflow:
 - `VITE_PARSE_JAVASCRIPT_KEY`
 - `VITE_PARSE_SERVER_URL`
 
-The Vite config automatically uses `/customer-management/` as the base path when the build runs in the GitHub Pages workflow.
+The Vite config automatically uses `/customer-management/` as the base path for the default GitHub Pages repo URL, and `/` when the workflow is deploying to a custom domain.

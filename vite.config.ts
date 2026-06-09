@@ -4,7 +4,8 @@ import { VitePWA } from 'vite-plugin-pwa'
 import { readFileSync } from 'node:fs'
 
 const repoBase = '/customer-management/'
-const base = process.env.GITHUB_PAGES === 'true' ? repoBase : '/'
+const hasCustomDomain = process.env.GITHUB_PAGES_CUSTOM_DOMAIN === 'true'
+const base = process.env.GITHUB_PAGES === 'true' && !hasCustomDomain ? repoBase : '/'
 const packageJson = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),
 ) as { version: string }

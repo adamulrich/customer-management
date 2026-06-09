@@ -36,6 +36,7 @@ jobs:
       - name: Build
         env:
           GITHUB_PAGES: 'true'
+          GITHUB_PAGES_CUSTOM_DOMAIN: 'true'
           VITE_PARSE_APP_ID: ${{ secrets.VITE_PARSE_APP_ID }}
           VITE_PARSE_JAVASCRIPT_KEY: ${{ secrets.VITE_PARSE_JAVASCRIPT_KEY }}
           VITE_PARSE_SERVER_URL: ${{ secrets.VITE_PARSE_SERVER_URL }}
