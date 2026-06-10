@@ -21,7 +21,7 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
-        name: 'Prime Pianos Customer Management',
+        name: 'Prime Pianos CM',
         short_name: 'ppcm',
         description: `Customer management for a prime piano tuning. Version ${appVersion}.`,
         theme_color: '#1f4d3d',
