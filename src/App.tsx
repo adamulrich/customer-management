@@ -121,6 +121,10 @@ function shortDate(value: string) {
   return format(parseISO(value), 'MMM d, yyyy')
 }
 
+function shortDateTime(value: string) {
+  return format(parseISO(value), 'MMM d h:mm a')
+}
+
 function calendarEventClass(status: AppointmentStatus) {
   return `calendar-event status-${status}`
 }
@@ -682,11 +686,132 @@ function App() {
       .join('\n')
   }
 
-  function asHtml(text: string) {
-    return text
+  function escapeHtml(value: string) {
+    return value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+  }
+
+  function emailShell({
+    eyebrow,
+    title,
+    body,
+    ctaLabel,
+    ctaHref,
+  }: {
+    eyebrow: string
+    title: string
+    body: string
+    ctaLabel?: string
+    ctaHref?: string
+  }) {
+    const cta = ctaLabel && ctaHref
+      ? `
+        <div style="margin: 28px 0 10px;">
+          <a href="${ctaHref}" style="display: inline-block; padding: 14px 22px; border-radius: 999px; background: linear-gradient(135deg, #214c3c, #7d5e35); color: #f8f4ec; text-decoration: none; font-weight: 700;">
+            ${escapeHtml(ctaLabel)}
+          </a>
+        </div>
+        <p style="margin: 12px 0 0; font-size: 13px; line-height: 1.6; color: #6a5c4d; word-break: break-all;">
+          ${escapeHtml(ctaHref)}
+        </p>
+      `
+      : ''
+
+    return `
+      <div style="margin: 0; padding: 32px 16px; background: #f4efe6; font-family: Georgia, 'Times New Roman', serif; color: #1f1a16;">
+        <div style="max-width: 680px; margin: 0 auto; background: rgba(255, 250, 244, 0.96); border: 1px solid rgba(28, 42, 36, 0.14); border-radius: 28px; box-shadow: 0 18px 60px rgba(66, 40, 8, 0.08); overflow: hidden;">
+          <div style="padding: 28px 32px 18px; background: linear-gradient(180deg, rgba(33, 76, 60, 0.06), rgba(255, 250, 244, 0));">
+            <div style="font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; color: #6a5c4d; margin-bottom: 10px;">
+              ${escapeHtml(eyebrow)}
+            </div>
+            <h1 style="margin: 0; font-size: 34px; line-height: 1.05; color: #214c3c;">
+              ${escapeHtml(title)}
+            </h1>
+          </div>
+          <div style="padding: 0 32px 32px;">
+            ${body}
+            ${cta}
+          </div>
+        </div>
+      </div>
+    `
+  }
+
+  function proseEmailHtml(text: string, options: { eyebrow: string; title: string; ctaLabel?: string; ctaHref?: string }) {
+    const paragraphs = text
       .split('\n\n')
-      .map((paragraph) => `<p>${paragraph.replace(/\n/g, '<br />')}</p>`)
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean)
+      .map(
+        (paragraph) =>
+          `<p style="margin: 0 0 16px; font-size: 16px; line-height: 1.7; color: #2f2923;">${escapeHtml(paragraph).replaceAll('\n', '<br />')}</p>`,
+      )
       .join('')
+
+    return emailShell({
+      eyebrow: options.eyebrow,
+      title: options.title,
+      body: paragraphs,
+      ctaLabel: options.ctaLabel,
+      ctaHref: options.ctaHref,
+    })
+  }
+
+  function invoiceHtml(appointment: AppointmentRecord) {
+    const venmoLink = settings.venmoHandle
+      ? `https://venmo.com/${settings.venmoHandle}?txn=pay&amount=${totalForAppointment(appointment).toFixed(2)}&note=${encodeURIComponent(`Piano tuning on ${shortDate(appointment.appointmentDate)}`)}`
+      : ''
+
+    const rows = [
+      ['Appointment date', shortDate(appointment.appointmentDate)],
+      ['Quoted estimate', currency(appointment.quotedEstimate)],
+      ['Travel charge', currency(appointment.travelCharge)],
+      ['Additional charges', currency(appointment.additionalCharges)],
+      appointment.additionalChargeNote
+        ? ['Additional charge note', appointment.additionalChargeNote]
+        : null,
+      ['Tax', currency(appointment.taxAmount)],
+      ['Total due', currency(totalForAppointment(appointment))],
+    ]
+      .filter((row): row is [string, string] => Boolean(row))
+      .map(
+        ([label, value]) => `
+          <tr>
+            <td style="padding: 12px 0; border-bottom: 1px solid rgba(33, 76, 60, 0.08); color: #6a5c4d; font-size: 14px;">
+              ${escapeHtml(label)}
+            </td>
+            <td style="padding: 12px 0; border-bottom: 1px solid rgba(33, 76, 60, 0.08); color: #1f1a16; font-size: 16px; font-weight: 700; text-align: right;">
+              ${escapeHtml(value)}
+            </td>
+          </tr>
+        `,
+      )
+      .join('')
+
+    const body = `
+      <p style="margin: 0 0 16px; font-size: 16px; line-height: 1.7; color: #2f2923;">Hi ${escapeHtml(appointment.customerName)},</p>
+      <p style="margin: 0 0 22px; font-size: 16px; line-height: 1.7; color: #2f2923;">
+        Thanks for scheduling your piano tuning appointment. Here is your invoice summary.
+      </p>
+      <div style="padding: 20px 22px; border-radius: 22px; background: rgba(255, 255, 255, 0.65); border: 1px solid rgba(33, 76, 60, 0.08);">
+        <table role="presentation" style="width: 100%; border-collapse: collapse;">
+          ${rows}
+        </table>
+      </div>
+      <p style="margin: 22px 0 0; font-size: 15px; line-height: 1.7; color: #2f2923;">${escapeHtml(settings.emailSignature)}</p>
+    `
+
+    return emailShell({
+      eyebrow: settings.businessName,
+      title: 'Invoice',
+      body,
+      ctaLabel: venmoLink ? `Pay ${currency(totalForAppointment(appointment))} with Venmo` : undefined,
+      ctaHref: venmoLink || undefined,
+    })
   }
 
   function reminderText(customer: CustomerRecord, appointment: AppointmentRecord) {
@@ -720,6 +845,27 @@ function App() {
       '',
       settings.emailSignature,
     ].join('\n')
+  }
+
+  function reminderHtml(customer: CustomerRecord, appointment: AppointmentRecord) {
+    return proseEmailHtml(reminderText(customer, appointment), {
+      eyebrow: settings.businessName,
+      title: 'Time for your next tuning',
+    })
+  }
+
+  function followUpHtml(customer: CustomerRecord, appointment: AppointmentRecord) {
+    return proseEmailHtml(followUpText(customer, appointment), {
+      eyebrow: settings.businessName,
+      title: 'Checking in after your tuning',
+    })
+  }
+
+  function marketingHtml() {
+    return proseEmailHtml(marketingText(), {
+      eyebrow: settings.businessName,
+      title: 'Current piano tuning special',
+    })
   }
 
   if (!isParseConfigured()) {
@@ -1323,12 +1469,12 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
 
             <div className="appointments-dashboard">
               <section className="schedule-block">
-                <div className="panel-heading compact">
-                  <div>
-                    <p className="eyebrow">Coming up</p>
-                    <h3>Next 2 weeks</h3>
-                  </div>
-                  <span>{nextTwoWeeksAppointments.length} scheduled</span>
+                <div className="schedule-header">
+                  <p className="eyebrow">Coming up</p>
+                  <h3>Next 2 weeks</h3>
+                  <span className="schedule-header-meta">
+                    {nextTwoWeeksAppointments.length} scheduled
+                  </span>
                 </div>
                 {nextTwoWeeksAppointments.length ? (
                   <div className="appointment-table-wrap">
@@ -1348,7 +1494,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                             className="interactive-row"
                             onClick={() => openAppointmentDetails(appointment)}
                           >
-                            <td>{fullDate(appointment.appointmentDate)}</td>
+                            <td>{shortDateTime(appointment.appointmentDate)}</td>
                             <td>{appointment.customerName}</td>
                             <td>{appointment.status}</td>
                             <td>{currency(totalForAppointment(appointment))}</td>
@@ -1904,7 +2050,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                             to: customer.email,
                             subject: `Invoice from ${settings.businessName}`,
                             text: message,
-                            html: asHtml(message),
+                            html: invoiceHtml(appointment),
                             customerId: customer.id,
                             appointmentId: appointment.id,
                             kind: 'invoice',
@@ -1985,7 +2131,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                             to: customer.email,
                             subject: 'Time to schedule your next piano tuning',
                             text: message,
-                            html: asHtml(message),
+                            html: reminderHtml(customer, lastService),
                             customerId: customer.id,
                             appointmentId: lastService.id,
                             kind: 'reminder',
@@ -2057,7 +2203,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                             to: customer.email,
                             subject: 'Checking in on your piano',
                             text: message,
-                            html: asHtml(message),
+                            html: followUpHtml(customer, appointment),
                             customerId: customer.id,
                             appointmentId: appointment.id,
                             kind: 'follow_up',
@@ -2144,7 +2290,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         .filter(Boolean),
                       subject: `${settings.businessName} special offer`,
                       text: message,
-                      html: asHtml(message),
+                      html: marketingHtml(),
                       customerIds: marketingTargets.map((customer) => customer.id),
                     })
                     return markMarketingSent(marketingTargets.map((customer) => customer.id))

@@ -271,6 +271,7 @@
 }
 
 .panel-heading h2,
+.panel-heading h3,
 .detail-card h3,
 .app-banner h1,
 .auth-card h1,
@@ -436,7 +437,6 @@
 
 .appointments-dashboard,
 .schedule-block,
-.appointment-table,
 .calendar-grid,
 .calendar-weekdays,
 .calendar-day-events {
@@ -456,13 +456,39 @@
   background: rgba(255, 255, 255, 0.5);
 }
 
+.schedule-header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    'eyebrow eyebrow'
+    'title meta';
+  gap: 0.35rem 0.75rem;
+  align-items: baseline;
+}
+
+.schedule-header .eyebrow {
+  grid-area: eyebrow;
+  margin-bottom: 0;
+}
+
+.schedule-header h3 {
+  grid-area: title;
+  margin: 0;
+}
+
+.schedule-header-meta {
+  grid-area: meta;
+  align-self: baseline;
+  color: #3b3126;
+}
+
 .appointment-table-wrap {
   overflow-x: auto;
 }
 
 .appointment-table {
   width: 100%;
-  border-collapse: collapse;
+  /* border-collapse: collapse; */
   min-width: 32rem;
 }
 
@@ -471,13 +497,33 @@
   padding: 0.8rem 0.7rem;
   border-bottom: 1px solid rgba(33, 76, 60, 0.1);
   text-align: left;
+  font-size: 0.875rem;
+}
+
+.appointment-table th:first-child,
+.appointment-table td:first-child {
+  padding-left: 0;
+}
+
+.appointment-table th:last-child,
+.appointment-table td:last-child {
+  padding-right: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .appointment-table th {
-  font-size: 0.8rem;
+  font-size: 0.675rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: #645749;
+}
+
+.appointment-table th:first-child,
+.appointment-table td:first-child,
+.appointment-table th:last-child,
+.appointment-table td:last-child {
+  white-space: nowrap;
 }
 
 .interactive-row {
@@ -494,32 +540,42 @@
 }
 
 .calendar-weekdays {
-  gap: 0.5rem;
+  gap: 0;
   color: #645749;
-  font-size: 0.82rem;
+  font-size: 0.74rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+  border: 1px solid rgba(33, 76, 60, 0.12);
+  border-bottom: 0;
+  background: rgba(255, 255, 255, 0.36);
 }
 
 .calendar-weekdays span {
   text-align: center;
+  padding: 0.45rem 0.2rem;
+  border-right: 1px solid rgba(33, 76, 60, 0.12);
+}
+
+.calendar-weekdays span:last-child {
+  border-right: 0;
 }
 
 .calendar-grid {
-  gap: 0.4rem;
+  gap: 1px;
+  border: 1px solid rgba(33, 76, 60, 0.12);
+  background: rgba(33, 76, 60, 0.12);
 }
 
 .calendar-day {
-  min-height: 6.2rem;
-  padding: 0.45rem;
-  border-radius: 14px;
-  background: rgba(255, 250, 244, 0.86);
-  border: 1px solid rgba(33, 76, 60, 0.12);
+  min-height: 5.15rem;
+  padding: 0.3rem 0.32rem 0.35rem;
+  border-radius: 0;
+  background: rgba(255, 250, 244, 0.96);
+  border: 0;
 }
 
 .calendar-day.today {
-  background: linear-gradient(135deg, rgba(33, 76, 60, 0.12), rgba(143, 106, 57, 0.14));
-  border-color: rgba(33, 76, 60, 0.28);
+  background: linear-gradient(135deg, rgba(33, 76, 60, 0.12), rgba(143, 106, 57, 0.12));
 }
 
 .calendar-day.muted {
@@ -528,20 +584,20 @@
 
 .calendar-day-label {
   font-weight: 700;
-  margin-bottom: 0.35rem;
-  font-size: 0.92rem;
+  margin-bottom: 0.2rem;
+  font-size: 0.88rem;
 }
 
 .calendar-day-events {
-  gap: 0.25rem;
+  gap: 0.18rem;
 }
 
 .calendar-event {
   width: 100%;
   border: 0;
-  border-radius: 10px;
+  border-radius: 6px;
   color: #17352b;
-  padding: 0.28rem 0.42rem;
+  padding: 0.2rem 0.28rem;
   text-align: left;
   cursor: pointer;
   display: grid;
@@ -550,13 +606,13 @@
 }
 
 .calendar-event-time {
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   font-weight: 700;
   letter-spacing: 0.01em;
 }
 
 .calendar-event-name {
-  font-size: 0.76rem;
+  font-size: 0.69rem;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -940,5 +996,58 @@ pre {
 
   .app-shell {
     padding: 1rem;
+  }
+}
+
+@media (max-width: 700px) {
+  .app-shell,
+  .auth-shell,
+  .setup-shell {
+    padding: 0.75rem;
+  }
+
+  .app-banner,
+  .panel,
+  .status-banner,
+  .auth-card,
+  .setup-card,
+  .detail-card,
+  .customer-card,
+  .queue-card,
+  .appointment-card {
+    border-radius: 22px;
+  }
+
+  .panel,
+  .app-banner,
+  .status-banner {
+    padding-left: 0.9rem;
+    padding-right: 0.9rem;
+  }
+
+  .customer-toolbar input {
+    max-width: 100%;
+  }
+
+  .appointment-table {
+    min-width: 0;
+  }
+
+  .appointment-table th,
+  .appointment-table td {
+    padding: 0.7rem 0.45rem;
+    font-size: 0.8125rem;
+  }
+
+  .appointment-table th {
+    font-size: 0.625rem;
+  }
+
+  .tab-button,
+  .ghost-button,
+  .secondary-button,
+  .primary-button {
+    padding: 0.48rem 0.72rem;
+    font-size: 0.9rem;
   }
 }
