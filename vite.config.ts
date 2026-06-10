@@ -21,9 +21,9 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
-        name: 'Pitch Ledger',
-        short_name: 'PitchLedger',
-        description: `Customer management for a piano tuning business. Version ${appVersion}.`,
+        name: 'Prime Pianos Customer Management',
+        short_name: 'ppcm',
+        description: `Customer management for a prime piano tuning. Version ${appVersion}.`,
         theme_color: '#1f4d3d',
         background_color: '#f4efe6',
         display: 'standalone',
