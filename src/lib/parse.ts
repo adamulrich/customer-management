@@ -110,7 +110,10 @@ function toAppointmentRecord(object: Parse.Object): AppointmentRecord {
     customerId: object.get('customerId') ?? '',
     customerName: object.get('customerName') ?? '',
     appointmentDate: object.get('appointmentDate')?.toISOString() ?? new Date().toISOString(),
-    basePrice: Number(object.get('basePrice') ?? 0),
+    quotedEstimate: Number(object.get('quotedEstimate') ?? object.get('basePrice') ?? 0),
+    travelCharge: Number(object.get('travelCharge') ?? 0),
+    additionalCharges: Number(object.get('additionalCharges') ?? 0),
+    additionalChargeNote: object.get('additionalChargeNote') ?? '',
     taxAmount: Number(object.get('taxAmount') ?? 0),
     notes: object.get('notes') ?? '',
     status: object.get('status') ?? 'scheduled',
@@ -242,7 +245,11 @@ export async function saveAppointment(input: AppointmentInput) {
   record.set('customerId', input.customerId)
   record.set('customerName', input.customerName.trim())
   record.set('appointmentDate', new Date(input.appointmentDate))
-  record.set('basePrice', input.basePrice)
+  record.set('quotedEstimate', input.quotedEstimate)
+  record.set('basePrice', input.quotedEstimate)
+  record.set('travelCharge', input.travelCharge)
+  record.set('additionalCharges', input.additionalCharges)
+  record.set('additionalChargeNote', input.additionalChargeNote.trim())
   record.set('taxAmount', input.taxAmount)
   record.set('notes', input.notes.trim())
   record.set('status', input.status)

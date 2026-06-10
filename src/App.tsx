@@ -84,7 +84,10 @@ const emptyAppointmentForm = (): AppointmentInput => ({
   customerId: '',
   customerName: '',
   appointmentDate: defaultAppointmentDateTime(),
-  basePrice: 0,
+  quotedEstimate: 0,
+  travelCharge: 0,
+  additionalCharges: 0,
+  additionalChargeNote: '',
   taxAmount: 0,
   notes: '',
   status: 'scheduled',
@@ -102,7 +105,12 @@ function percent(value: number) {
 }
 
 function totalForAppointment(appointment: AppointmentRecord | AppointmentInput) {
-  return Number(appointment.basePrice || 0) + Number(appointment.taxAmount || 0)
+  return (
+    Number(appointment.quotedEstimate || 0) +
+    Number(appointment.travelCharge || 0) +
+    Number(appointment.additionalCharges || 0) +
+    Number(appointment.taxAmount || 0)
+  )
 }
 
 function fullDate(value: string) {
@@ -159,7 +167,11 @@ function quartersFromAppointments(appointments: AppointmentRecord[]) {
 
     return {
       label: `Q${Math.floor(start.getMonth() / 3) + 1} ${format(start, 'yyyy')}`,
-      sales: items.reduce((sum, item) => sum + item.basePrice, 0),
+      sales: items.reduce(
+        (sum, item) =>
+          sum + item.quotedEstimate + item.travelCharge + item.additionalCharges,
+        0,
+      ),
       tax: items.reduce((sum, item) => sum + item.taxAmount, 0),
       count: items.length,
     }
@@ -198,9 +210,12 @@ function App() {
   const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()))
   const [isCustomerFormOpen, setIsCustomerFormOpen] = useState(false)
   const [isAppointmentFormOpen, setIsAppointmentFormOpen] = useState(false)
+  const [isAppointmentEditing, setIsAppointmentEditing] = useState(false)
+  const [selectedAppointmentId, setSelectedAppointmentId] = useState('')
   const [loginForm, setLoginForm] = useState({ username: '', password: '' })
   const [filters, setFilters] = useState({
     customerSearch: '',
+    serviceHistorySearch: '',
     serviceWindowMonths: defaultSettings.marketingExcludeMonths,
   })
   const [loading, setLoading] = useState(false)
@@ -242,6 +257,8 @@ function App() {
   const customerMap = new Map(customers.map((customer) => [customer.id, customer]))
   const selectedCustomer =
     customers.find((customer) => customer.id === selectedCustomerId) ?? null
+  const selectedAppointment =
+    appointments.find((appointment) => appointment.id === selectedAppointmentId) ?? null
 
   const customerAppointments = (customerId: string) =>
     appointments
@@ -334,8 +351,24 @@ function App() {
   const serviceHistoryAppointments = [...completedAppointments].sort((left, right) =>
     right.appointmentDate.localeCompare(left.appointmentDate),
   )
+  const filteredServiceHistoryAppointments = serviceHistoryAppointments.filter((appointment) => {
+    const query = filters.serviceHistorySearch.trim().toLowerCase()
+    if (!query) {
+      return true
+    }
+
+    return [
+      appointment.customerName,
+      appointment.status,
+      appointment.notes,
+      fullDate(appointment.appointmentDate),
+      shortDate(appointment.appointmentDate),
+      currency(totalForAppointment(appointment)),
+    ].some((field) => field.toLowerCase().includes(query))
+  })
   const totalSales = completedAppointments.reduce(
-    (sum, appointment) => sum + appointment.basePrice,
+    (sum, appointment) =>
+      sum + appointment.quotedEstimate + appointment.travelCharge + appointment.additionalCharges,
     0,
   )
   const totalTaxCollected = completedAppointments.reduce(
@@ -440,11 +473,21 @@ function App() {
     if (saved) {
       await refreshData()
       setAppointmentForm({
-        ...emptyAppointmentForm(),
-        customerId: selected.id,
-        customerName: selected.name,
+        id: saved.id,
+        customerId: saved.customerId,
+        customerName: saved.customerName,
+        appointmentDate: saved.appointmentDate.slice(0, 16),
+        quotedEstimate: saved.quotedEstimate,
+        travelCharge: saved.travelCharge,
+        additionalCharges: saved.additionalCharges,
+        additionalChargeNote: saved.additionalChargeNote,
+        taxAmount: saved.taxAmount,
+        notes: saved.notes,
+        status: saved.status,
       })
-      setIsAppointmentFormOpen(false)
+      setSelectedAppointmentId(saved.id)
+      setIsAppointmentFormOpen(true)
+      setIsAppointmentEditing(false)
       setSelectedCustomerId(selected.id)
       setStatusText(`Saved appointment for ${selected.name}.`)
     }
@@ -504,18 +547,36 @@ function App() {
     setActiveTab('customers')
   }
 
-  function editAppointment(appointment: AppointmentRecord) {
+  function loadAppointmentIntoForm(appointment: AppointmentRecord) {
     setAppointmentForm({
       id: appointment.id,
       customerId: appointment.customerId,
       customerName: appointment.customerName,
       appointmentDate: appointment.appointmentDate.slice(0, 16),
-      basePrice: appointment.basePrice,
+      quotedEstimate: appointment.quotedEstimate,
+      travelCharge: appointment.travelCharge,
+      additionalCharges: appointment.additionalCharges,
+      additionalChargeNote: appointment.additionalChargeNote,
       taxAmount: appointment.taxAmount,
       notes: appointment.notes,
       status: appointment.status,
     })
+  }
+
+  function openAppointmentDetails(appointment: AppointmentRecord) {
+    loadAppointmentIntoForm(appointment)
+    setSelectedAppointmentId(appointment.id)
     setIsAppointmentFormOpen(true)
+    setIsAppointmentEditing(false)
+    setSelectedCustomerId(appointment.customerId)
+    setActiveTab('appointments')
+  }
+
+  function beginAppointmentEdit(appointment: AppointmentRecord) {
+    loadAppointmentIntoForm(appointment)
+    setSelectedAppointmentId(appointment.id)
+    setIsAppointmentFormOpen(true)
+    setIsAppointmentEditing(true)
     setSelectedCustomerId(appointment.customerId)
     setActiveTab('appointments')
   }
@@ -538,6 +599,8 @@ function App() {
       customerName: selectedCustomer?.name ?? '',
     })
     setIsAppointmentFormOpen(false)
+    setIsAppointmentEditing(false)
+    setSelectedAppointmentId('')
   }
 
   function startNewAppointment(customer?: CustomerRecord | null) {
@@ -547,7 +610,9 @@ function App() {
       customerName: customer?.name ?? '',
     })
     setSelectedCustomerId(customer?.id ?? '')
+    setSelectedAppointmentId('')
     setIsAppointmentFormOpen(true)
+    setIsAppointmentEditing(true)
     setActiveTab('appointments')
   }
 
@@ -600,14 +665,21 @@ function App() {
       `Hi ${appointment.customerName},`,
       '',
       `Thanks for scheduling your piano tuning appointment on ${shortDate(appointment.appointmentDate)}.`,
-      `Base price: ${currency(appointment.basePrice)}`,
+      `Quoted estimate: ${currency(appointment.quotedEstimate)}`,
+      `Travel charge: ${currency(appointment.travelCharge)}`,
+      `Additional charges: ${currency(appointment.additionalCharges)}`,
+      appointment.additionalChargeNote
+        ? `Additional charge note: ${appointment.additionalChargeNote}`
+        : null,
       `Tax: ${currency(appointment.taxAmount)}`,
       `Total: ${currency(totalForAppointment(appointment))}`,
       '',
       `Pay with Venmo: ${venmoLink}`,
       '',
       settings.emailSignature,
-    ].join('\n')
+    ]
+      .filter(Boolean)
+      .join('\n')
   }
 
   function asHtml(text: string) {
@@ -677,12 +749,17 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
     return (
       <main className="auth-shell">
         <section className="auth-card">
-          <p className="eyebrow">PWA for piano tuners</p>
-          <h1>Pitch Ledger</h1>
-          <p>
-            Secure customer records, appointments, reminders, invoices, and tax rollups with
-            the same Back4App login flow you already use elsewhere.
-          </p>
+          <div className="auth-header">
+            <div className="auth-mark" aria-hidden="true">
+              <span className="auth-mark-main"></span>
+              <span className="auth-mark-side auth-mark-side-top"></span>
+              <span className="auth-mark-side auth-mark-side-bottom"></span>
+              <span className="auth-mark-dot auth-mark-dot-a"></span>
+              <span className="auth-mark-dot auth-mark-dot-b"></span>
+              <span className="auth-mark-dot auth-mark-dot-c"></span>
+            </div>
+            <h1>Prime Pianos Customer Management</h1>
+          </div>
 
           <form className="auth-form" onSubmit={handleLogin}>
             <label>
@@ -790,7 +867,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   <button
                     key={appointment.id}
                     className="queue-card"
-                    onClick={() => editAppointment(appointment)}
+                    onClick={() => openAppointmentDetails(appointment)}
                   >
                     <strong>{appointment.customerName}</strong>
                     <span>{fullDate(appointment.appointmentDate)}</span>
@@ -834,19 +911,21 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   <h2>{customerForm.id ? 'Edit customer' : 'New customer'}</h2>
                 </div>
                 <div className="button-row">
-                  <button className="ghost-button" onClick={resetCustomerForm}>
-                    Back to customers
-                  </button>
                   <button
-                    className="ghost-button"
-                    onClick={() => setCustomerForm(emptyCustomerForm(settings))}
+                    type="submit"
+                    form="customer-form"
+                    className="primary-button"
+                    disabled={loading}
                   >
-                    Clear
+                    {customerForm.id ? 'Save customer' : 'Create customer'}
+                  </button>
+                  <button type="button" className="ghost-button" onClick={resetCustomerForm}>
+                    Cancel
                   </button>
                 </div>
               </div>
 
-              <form className="form-grid" onSubmit={handleCustomerSave}>
+              <form id="customer-form" className="form-grid" onSubmit={handleCustomerSave}>
                 <label>
                   Name
                   <input
@@ -950,9 +1029,6 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     }
                   />
                 </label>
-                <button type="submit" className="primary-button" disabled={loading}>
-                  {customerForm.id ? 'Save customer' : 'Create customer'}
-                </button>
               </form>
             </article>
           ) : selectedVisibleCustomer ? (
@@ -985,48 +1061,61 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
               </div>
 
               <div className="detail-card customer-detail-card">
-                <div className="detail-grid">
-                  <p>
-                    Email:{' '}
-                    {selectedVisibleCustomer.email ? (
-                      <a href={`mailto:${selectedVisibleCustomer.email}`} className="detail-link">
-                        {selectedVisibleCustomer.email}
-                      </a>
-                    ) : (
-                      'n/a'
-                    )}
-                  </p>
-                  <p>
-                    Phone:{' '}
-                    {selectedVisibleCustomer.phone ? (
-                      <a href={`tel:${selectedVisibleCustomer.phone}`} className="detail-link">
-                        {selectedVisibleCustomer.phone}
-                      </a>
-                    ) : (
-                      'n/a'
-                    )}
-                  </p>
-                  <p>Reminder cadence: every {selectedVisibleCustomer.reminderMonths} months</p>
-                  <p>
-                    Follow-up cadence: {selectedVisibleCustomer.followUpWeeks} weeks after service
-                  </p>
+                <div className="appointment-summary-grid customer-summary-grid">
+                  <div className="summary-item">
+                    <span>Email</span>
+                    <strong>
+                      {selectedVisibleCustomer.email ? (
+                        <a href={`mailto:${selectedVisibleCustomer.email}`} className="detail-link">
+                          {selectedVisibleCustomer.email}
+                        </a>
+                      ) : (
+                        'No email on file'
+                      )}
+                    </strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Phone</span>
+                    <strong>
+                      {selectedVisibleCustomer.phone ? (
+                        <a href={`tel:${selectedVisibleCustomer.phone}`} className="detail-link">
+                          {selectedVisibleCustomer.phone}
+                        </a>
+                      ) : (
+                        'No phone on file'
+                      )}
+                    </strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Reminder cadence</span>
+                    <strong>Every {selectedVisibleCustomer.reminderMonths} months</strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Follow-up cadence</span>
+                    <strong>{selectedVisibleCustomer.followUpWeeks} weeks after service</strong>
+                  </div>
+                  <div className="summary-item full-span">
+                    <span>Address</span>
+                    <strong>
+                      {selectedVisibleCustomer.address ? (
+                        <a
+                          href={mapLink(selectedVisibleCustomer.address)}
+                          className="detail-link"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {selectedVisibleCustomer.address}
+                        </a>
+                      ) : (
+                        'No address on file yet.'
+                      )}
+                    </strong>
+                  </div>
                 </div>
-                <p>
-                  Address:{' '}
-                  {selectedVisibleCustomer.address ? (
-                    <a
-                      href={mapLink(selectedVisibleCustomer.address)}
-                      className="detail-link"
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {selectedVisibleCustomer.address}
-                    </a>
-                  ) : (
-                    'No address on file yet.'
-                  )}
-                </p>
-                <p className="detail-notes">{selectedVisibleCustomer.notes || 'No notes yet.'}</p>
+                <div className="summary-notes">
+                  <span>Notes</span>
+                  <p className="detail-notes">{selectedVisibleCustomer.notes || 'No notes yet.'}</p>
+                </div>
 
                 <div className="customer-history">
                   <div className="panel-heading compact">
@@ -1048,7 +1137,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         <button
                           key={appointment.id}
                           className="history-row"
-                          onClick={() => editAppointment(appointment)}
+                          onClick={() => openAppointmentDetails(appointment)}
                         >
                           <strong>{shortDate(appointment.appointmentDate)}</strong>
                           <span>{appointment.status}</span>
@@ -1187,12 +1276,17 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   <button
                     key={appointment.id}
                     className="queue-card"
-                    onClick={() => editAppointment(appointment)}
+                    onClick={() => openAppointmentDetails(appointment)}
                   >
                     <strong>{appointment.customerName}</strong>
                     <span>{fullDate(appointment.appointmentDate)}</span>
                     <span>
-                      {currency(appointment.basePrice)} sales • {currency(appointment.taxAmount)} tax
+                      {currency(
+                        appointment.quotedEstimate +
+                          appointment.travelCharge +
+                          appointment.additionalCharges,
+                      )}{' '}
+                      sales • {currency(appointment.taxAmount)} tax
                     </span>
                   </button>
                 ))}
@@ -1252,7 +1346,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                           <tr
                             key={appointment.id}
                             className="interactive-row"
-                            onClick={() => editAppointment(appointment)}
+                            onClick={() => openAppointmentDetails(appointment)}
                           >
                             <td>{fullDate(appointment.appointmentDate)}</td>
                             <td>{appointment.customerName}</td>
@@ -1325,7 +1419,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                               key={appointment.id}
                               type="button"
                               className={calendarEventClass(appointment.status)}
-                              onClick={() => editAppointment(appointment)}
+                              onClick={() => openAppointmentDetails(appointment)}
                               title={`${format(parseISO(appointment.appointmentDate), 'h:mm a')} ${appointment.customerName}`}
                             >
                               <span className="calendar-event-time">
@@ -1352,7 +1446,11 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
             <div className="appointment-list">
               {sortedAppointments.map((appointment) => (
                 <div key={appointment.id} className="appointment-card">
-                  <button className="appointment-main" onClick={() => editAppointment(appointment)}>
+                  <button
+                    type="button"
+                    className="appointment-main"
+                    onClick={() => openAppointmentDetails(appointment)}
+                  >
                     <strong>{appointment.customerName}</strong>
                     <span>{fullDate(appointment.appointmentDate)}</span>
                     <span>
@@ -1374,190 +1472,325 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">Scheduling</p>
-                <h2>{appointmentForm.id ? 'Edit appointment' : 'New appointment'}</h2>
+                <h2>
+                  {isAppointmentEditing
+                    ? appointmentForm.id
+                      ? 'Edit appointment'
+                      : 'New appointment'
+                    : 'Appointment details'}
+                </h2>
               </div>
               <div className="button-row">
-                <button className="ghost-button" onClick={resetAppointmentForm}>
-                  Back to calendar
-                </button>
-                <button
-                  className="ghost-button"
-                  onClick={() =>
-                    setAppointmentForm({
-                      ...emptyAppointmentForm(),
-                      customerId: selectedCustomer?.id ?? '',
-                      customerName: selectedCustomer?.name ?? '',
-                    })
-                  }
-                >
-                  Clear
-                </button>
+                {isAppointmentEditing ? (
+                  <>
+                    <button
+                      type="submit"
+                      form="appointment-form"
+                      className="primary-button"
+                      disabled={loading}
+                    >
+                      {appointmentForm.id ? 'Save appointment' : 'Create appointment'}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => setIsAppointmentEditing(false)}
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : selectedAppointment ? (
+                  <>
+                    <button type="button" className="ghost-button" onClick={resetAppointmentForm}>
+                      Back to calendar
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() =>
+                        selectedAppointment ? beginAppointmentEdit(selectedAppointment) : null
+                      }
+                    >
+                      Edit
+                    </button>
+                  </>
+                ) : null}
               </div>
             </div>
-
-            <form className="form-grid" onSubmit={handleAppointmentSave}>
-              <label className="full-width">
-                Customer
-                <select
-                  required
-                  value={appointmentForm.customerId}
-                  onChange={(event) => {
-                    const nextCustomer = customerMap.get(event.target.value)
-                    setAppointmentForm((current) => ({
-                      ...current,
-                      customerId: event.target.value,
-                      customerName: nextCustomer?.name ?? '',
-                    }))
-                    setSelectedCustomerId(event.target.value)
-                  }}
-                >
-                  <option value="">Select customer</option>
-                  {customers.map((customer) => (
-                    <option key={customer.id} value={customer.id}>
-                      {customer.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Appointment date
-                <input
-                  required
-                  type="date"
-                  value={appointmentTimeParts.datePart}
-                  onChange={(event) => updateAppointmentDatePart(event.target.value)}
-                />
-              </label>
-              <label>
-                Appointment time
-                <div className="time-picker">
-                  <div className="time-picker-column">
-                    <span className="time-picker-label">Hour</span>
-                    <div className="time-picker-scroll">
-                      {appointmentHourOptions.map((hour24) => (
-                        <button
-                          key={hour24}
-                          type="button"
-                          className={
-                            appointmentTimeParts.hour24 === hour24
-                              ? 'time-picker-option active'
-                              : 'time-picker-option'
-                          }
-                          onClick={() => updateAppointmentHour(hour24)}
-                        >
-                          {formatHourOption(hour24)}
-                        </button>
+            {isAppointmentEditing ? (
+              <form id="appointment-form" className="form-grid" onSubmit={handleAppointmentSave}>
+                <label className="full-width">
+                  Customer
+                  <select
+                    required
+                    value={appointmentForm.customerId}
+                    onChange={(event) => {
+                      const nextCustomer = customerMap.get(event.target.value)
+                      setAppointmentForm((current) => ({
+                        ...current,
+                        customerId: event.target.value,
+                        customerName: nextCustomer?.name ?? '',
+                      }))
+                      setSelectedCustomerId(event.target.value)
+                    }}
+                  >
+                    <option value="">Select customer</option>
+                    {customers.map((customer) => (
+                      <option key={customer.id} value={customer.id}>
+                        {customer.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Appointment date
+                  <input
+                    required
+                    type="date"
+                    value={appointmentTimeParts.datePart}
+                    onChange={(event) => updateAppointmentDatePart(event.target.value)}
+                  />
+                </label>
+                <label>
+                  Appointment hour
+                  <select
+                    value={appointmentTimeParts.hour24}
+                    onChange={(event) => updateAppointmentHour(Number(event.target.value))}
+                  >
+                    {appointmentHourOptions.map((hour24) => (
+                      <option key={hour24} value={hour24}>
+                        {formatHourOption(hour24)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Appointment minute
+                  <select
+                    value={appointmentTimeParts.minute}
+                    onChange={(event) => updateAppointmentMinute(Number(event.target.value))}
+                  >
+                    {appointmentMinuteOptions
+                      .filter((minute) => appointmentTimeParts.hour24 !== 20 || minute === 0)
+                      .map((minute) => (
+                        <option key={minute} value={minute}>
+                          {String(minute).padStart(2, '0')}
+                        </option>
                       ))}
-                    </div>
-                  </div>
-                  <div className="time-picker-column">
-                    <span className="time-picker-label">Min</span>
-                    <div className="time-picker-scroll">
-                      {appointmentMinuteOptions.map((minute) => {
-                        const isDisabled =
-                          appointmentTimeParts.hour24 === 20 && minute !== 0
-                        return (
-                          <button
-                            key={minute}
-                            type="button"
-                            disabled={isDisabled}
-                            className={
-                              appointmentTimeParts.minute === minute
-                                ? 'time-picker-option active'
-                                : 'time-picker-option'
-                            }
-                            onClick={() => updateAppointmentMinute(minute)}
-                          >
-                            {String(minute).padStart(2, '0')}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-                </div>
-                <small className="field-hint">Allowed booking window: 7:00 AM to 8:00 PM</small>
-              </label>
-              <label>
-                Status
-                <select
-                  value={appointmentForm.status}
-                  onChange={(event) =>
-                    setAppointmentForm((current) => ({
-                      ...current,
-                      status: event.target.value as AppointmentStatus,
-                    }))
-                  }
-                >
-                  <option value="scheduled">Scheduled</option>
-                  <option value="completed">Completed</option>
-                  <option value="invoiced">Invoiced</option>
-                  <option value="paid">Paid</option>
-                </select>
-              </label>
-              <label>
-                Base price
-                <input
-                  required
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={appointmentForm.basePrice === 0 ? '' : appointmentForm.basePrice}
-                  onChange={(event) =>
-                    setAppointmentForm((current) => ({
-                      ...current,
-                      basePrice: event.target.value === '' ? 0 : Number(event.target.value),
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                Tax amount
-                <div className="inline-field">
+                  </select>
+                </label>
+                <label>
+                  Status
+                  <select
+                    value={appointmentForm.status}
+                    onChange={(event) =>
+                      setAppointmentForm((current) => ({
+                        ...current,
+                        status: event.target.value as AppointmentStatus,
+                      }))
+                    }
+                  >
+                    <option value="scheduled">Scheduled</option>
+                    <option value="completed">Completed</option>
+                    <option value="invoiced">Invoiced</option>
+                    <option value="paid">Paid</option>
+                  </select>
+                </label>
+                <label>
+                  Quoted estimate
                   <input
                     required
                     type="number"
                     min="0"
                     step="0.01"
-                    value={appointmentForm.taxAmount === 0 ? '' : appointmentForm.taxAmount}
+                    value={
+                      appointmentForm.quotedEstimate === 0 ? '' : appointmentForm.quotedEstimate
+                    }
                     onChange={(event) =>
                       setAppointmentForm((current) => ({
                         ...current,
-                        taxAmount: event.target.value === '' ? 0 : Number(event.target.value),
+                        quotedEstimate: event.target.value === '' ? 0 : Number(event.target.value),
                       }))
                     }
                   />
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={() =>
+                </label>
+                <label>
+                  Travel charge
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={appointmentForm.travelCharge === 0 ? '' : appointmentForm.travelCharge}
+                    onChange={(event) =>
                       setAppointmentForm((current) => ({
                         ...current,
-                        taxAmount: Number((current.basePrice * settings.defaultTaxRate).toFixed(2)),
+                        travelCharge: event.target.value === '' ? 0 : Number(event.target.value),
                       }))
                     }
-                  >
-                    Apply {percent(settings.defaultTaxRate)}
-                  </button>
+                  />
+                </label>
+                <label>
+                  Additional charges
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={
+                      appointmentForm.additionalCharges === 0 ? ''
+                        : appointmentForm.additionalCharges
+                    }
+                    onChange={(event) =>
+                      setAppointmentForm((current) => ({
+                        ...current,
+                        additionalCharges:
+                          event.target.value === '' ? 0 : Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Additional charge note
+                  <input
+                    placeholder="What is this for?"
+                    value={appointmentForm.additionalChargeNote}
+                    onChange={(event) =>
+                      setAppointmentForm((current) => ({
+                        ...current,
+                        additionalChargeNote: event.target.value,
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  Tax amount
+                  <div className="inline-field">
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={appointmentForm.taxAmount === 0 ? '' : appointmentForm.taxAmount}
+                      onChange={(event) =>
+                        setAppointmentForm((current) => ({
+                          ...current,
+                          taxAmount: event.target.value === '' ? 0 : Number(event.target.value),
+                        }))
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() =>
+                        setAppointmentForm((current) => ({
+                          ...current,
+                          taxAmount: Number(
+                            (
+                              (current.quotedEstimate +
+                                current.travelCharge +
+                                current.additionalCharges) *
+                              settings.defaultTaxRate
+                            ).toFixed(2),
+                          ),
+                        }))
+                      }
+                    >
+                      Apply {percent(settings.defaultTaxRate)}
+                    </button>
+                  </div>
+                </label>
+                <label className="full-width">
+                  Notes
+                  <textarea
+                    rows={5}
+                    value={appointmentForm.notes}
+                    onChange={(event) =>
+                      setAppointmentForm((current) => ({ ...current, notes: event.target.value }))
+                    }
+                  />
+                </label>
+                <div className="detail-card accent">
+                  <span>Total due</span>
+                  <strong>{currency(totalForAppointment(appointmentForm))}</strong>
                 </div>
-              </label>
-              <label className="full-width">
-                Notes
-                <textarea
-                  rows={5}
-                  value={appointmentForm.notes}
-                  onChange={(event) =>
-                    setAppointmentForm((current) => ({ ...current, notes: event.target.value }))
-                  }
-                />
-              </label>
-              <div className="detail-card accent">
-                <span>Total due</span>
-                <strong>{currency(totalForAppointment(appointmentForm))}</strong>
+              </form>
+            ) : selectedAppointment ? (
+              <div className="detail-card appointment-detail-card">
+                <div className="appointment-summary-grid">
+                  <div className="summary-item">
+                    <span>Customer</span>
+                    <strong>{selectedAppointment.customerName}</strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Date</span>
+                    <strong>{fullDate(selectedAppointment.appointmentDate)}</strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Status</span>
+                    <strong>{selectedAppointment.status}</strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Total due</span>
+                    <strong>{currency(totalForAppointment(selectedAppointment))}</strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Quoted estimate</span>
+                    <strong>{currency(selectedAppointment.quotedEstimate)}</strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Travel charge</span>
+                    <strong>{currency(selectedAppointment.travelCharge)}</strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Additional charges</span>
+                    <strong>{currency(selectedAppointment.additionalCharges)}</strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Additional charge note</span>
+                    <strong>{selectedAppointment.additionalChargeNote || 'No additional charge note'}</strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Tax amount</span>
+                    <strong>{currency(selectedAppointment.taxAmount)}</strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Phone</span>
+                    <strong>
+                      {customerMap.get(selectedAppointment.customerId)?.phone ? (
+                        <a
+                          href={`tel:${customerMap.get(selectedAppointment.customerId)?.phone}`}
+                          className="detail-link"
+                        >
+                          {customerMap.get(selectedAppointment.customerId)?.phone}
+                        </a>
+                      ) : (
+                        'No phone on file'
+                      )}
+                    </strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Address</span>
+                    <strong>
+                      {customerMap.get(selectedAppointment.customerId)?.address ? (
+                        <a
+                          href={mapLink(customerMap.get(selectedAppointment.customerId)!.address)}
+                          className="detail-link"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {customerMap.get(selectedAppointment.customerId)?.address}
+                        </a>
+                      ) : (
+                        'No address on file'
+                      )}
+                    </strong>
+                  </div>
+                </div>
+                <div className="summary-notes">
+                  <span>Notes</span>
+                  <p className="detail-notes">{selectedAppointment.notes || 'No notes yet.'}</p>
+                </div>
               </div>
-              <button type="submit" className="primary-button" disabled={loading}>
-                {appointmentForm.id ? 'Save appointment' : 'Create appointment'}
-              </button>
-            </form>
+            ) : null}
           </article>
         </section>
       ) : null}
@@ -1570,13 +1803,45 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                 <p className="eyebrow">Service Log</p>
                 <h2>Service History</h2>
               </div>
-              <span>{serviceHistoryAppointments.length} recorded visits</span>
+              <span>{filteredServiceHistoryAppointments.length} recorded visits</span>
+            </div>
+
+            <div className="customer-toolbar">
+              <input
+                type="search"
+                placeholder="Search customer, date, status, notes"
+                value={filters.serviceHistorySearch}
+                onChange={(event) =>
+                  setFilters((current) => ({
+                    ...current,
+                    serviceHistorySearch: event.target.value,
+                  }))
+                }
+              />
+              {filters.serviceHistorySearch ? (
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() =>
+                    setFilters((current) => ({
+                      ...current,
+                      serviceHistorySearch: '',
+                    }))
+                  }
+                >
+                  Clear
+                </button>
+              ) : null}
             </div>
 
             <div className="appointment-list">
-              {serviceHistoryAppointments.map((appointment) => (
+              {filteredServiceHistoryAppointments.map((appointment) => (
                 <div key={appointment.id} className="appointment-card">
-                  <button className="appointment-main" onClick={() => editAppointment(appointment)}>
+                  <button
+                    type="button"
+                    className="appointment-main"
+                    onClick={() => openAppointmentDetails(appointment)}
+                  >
                     <strong>{appointment.customerName}</strong>
                     <span>{fullDate(appointment.appointmentDate)}</span>
                     <span>
@@ -1591,8 +1856,12 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   </button>
                 </div>
               ))}
-              {serviceHistoryAppointments.length === 0 ? (
-                <p className="empty-state">No completed appointments are recorded yet.</p>
+              {filteredServiceHistoryAppointments.length === 0 ? (
+                <p className="empty-state">
+                  {filters.serviceHistorySearch
+                    ? 'No service visits match that search.'
+                    : 'No completed appointments are recorded yet.'}
+                </p>
               ) : null}
             </div>
           </article>

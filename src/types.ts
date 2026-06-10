@@ -29,7 +29,10 @@ export type AppointmentRecord = {
   customerId: string
   customerName: string
   appointmentDate: string
-  basePrice: number
+  quotedEstimate: number
+  travelCharge: number
+  additionalCharges: number
+  additionalChargeNote: string
   taxAmount: number
   notes: string
   status: AppointmentStatus
