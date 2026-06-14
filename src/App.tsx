@@ -542,14 +542,35 @@ function App() {
       `Sending ${messageComposer.channel === 'email' ? 'email' : 'text'}…`,
       async () => {
         if (messageComposer.channel === 'email') {
+          const composerAppointment = messageComposer.appointmentId
+            ? appointments.find((appointment) => appointment.id === messageComposer.appointmentId) ?? null
+            : null
+          const composerCustomer = messageComposer.customerId
+            ? customerMap.get(messageComposer.customerId) ?? null
+            : null
+
+          let html = proseEmailHtml(messageComposer.message, {
+            eyebrow: settings.businessName,
+            title: messageComposer.title,
+          })
+
+          if (messageComposer.kind === 'invoice' && composerAppointment) {
+            html = invoiceHtml(composerAppointment, messageComposer.message)
+          }
+
+          if (messageComposer.kind === 'reminder' && composerCustomer && composerAppointment) {
+            html = reminderHtml(composerCustomer, composerAppointment, messageComposer.message)
+          }
+
+          if (messageComposer.kind === 'follow_up' && composerCustomer && composerAppointment) {
+            html = followUpHtml(composerCustomer, composerAppointment, messageComposer.message)
+          }
+
           await sendBusinessEmail({
             to: messageComposer.recipient,
             subject: messageComposer.subject,
             text: messageComposer.message,
-            html: proseEmailHtml(messageComposer.message, {
-              eyebrow: settings.businessName,
-              title: messageComposer.title,
-            }),
+            html,
             customerId: messageComposer.customerId,
             appointmentId: messageComposer.appointmentId,
             kind: messageComposer.kind,
@@ -825,9 +846,7 @@ function App() {
   }
 
   function invoiceText(appointment: AppointmentRecord) {
-    const venmoLink = settings.venmoHandle
-      ? `https://venmo.com/${settings.venmoHandle}?txn=pay&amount=${totalForAppointment(appointment).toFixed(2)}&note=${encodeURIComponent(`Piano tuning on ${shortDate(appointment.appointmentDate)}`)}`
-      : 'Add your Venmo handle in Settings to generate a payment link.'
+    const venmoLink = invoiceVenmoLink(appointment) || 'Add your Venmo handle in Settings to generate a payment link.'
 
     return [
       `Hi ${appointment.customerName},`,
@@ -847,10 +866,38 @@ function App() {
       '',
       `Pay with Venmo: ${venmoLink}`,
       '',
+      'Thank you for supporting my piano tuning business.',
+      '',
+      'Regards,',
       settings.emailSignature,
     ]
       .filter(Boolean)
       .join('\n')
+  }
+
+  function invoicePaymentLine(appointment: AppointmentRecord) {
+    return appointment.paymentMethod
+      ? `Payment method: ${paymentMethodLabel(appointment.paymentMethod)}`
+      : 'Payment options: Cash, Check, Venmo'
+  }
+
+  function invoiceVenmoLink(appointment: AppointmentRecord) {
+    return settings.venmoHandle
+      ? `https://venmo.com/${settings.venmoHandle}?txn=pay&amount=${totalForAppointment(appointment).toFixed(2)}&note=${encodeURIComponent(`Piano tuning on ${shortDate(appointment.appointmentDate)}`)}`
+      : ''
+  }
+
+  function invoiceEmailText(appointment: AppointmentRecord) {
+    return [
+      `Hi ${appointment.customerName},`,
+      '',
+      `Thanks for scheduling your piano tuning appointment on ${shortDate(appointment.appointmentDate)}.`,
+      '',
+      'Thank you for supporting my piano tuning business.',
+      '',
+      'Regards,',
+      settings.emailSignature,
+    ].join('\n')
   }
 
   function escapeHtml(value: string) {
@@ -928,13 +975,29 @@ function App() {
     })
   }
 
-  function invoiceHtml(appointment: AppointmentRecord) {
-    const venmoLink = settings.venmoHandle
-      ? `https://venmo.com/${settings.venmoHandle}?txn=pay&amount=${totalForAppointment(appointment).toFixed(2)}&note=${encodeURIComponent(`Piano tuning on ${shortDate(appointment.appointmentDate)}`)}`
-      : ''
+  function proseEmailBody(text: string) {
+    return text
+      .split('\n\n')
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean)
+      .map(
+        (paragraph) =>
+          `<p style="margin: 0 0 16px; font-size: 16px; line-height: 1.7; color: #2f2923;">${escapeHtml(paragraph).replaceAll('\n', '<br />')}</p>`,
+      )
+      .join('')
+  }
+
+  function invoiceHtml(appointment: AppointmentRecord, messageText = invoiceEmailText(appointment)) {
+    const venmoLink = invoiceVenmoLink(appointment)
+
+    const paragraphs = messageText
+      .split('\n\n')
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean)
+    const introText = paragraphs.slice(0, 2).join('\n\n')
+    const outroText = paragraphs.slice(2).join('\n\n')
 
     const rows = [
-      ['Appointment date', shortDate(appointment.appointmentDate)],
       ['Quoted estimate', currency(appointment.quotedEstimate)],
       ['Travel charge', currency(appointment.travelCharge)],
       ['Additional charges', currency(appointment.additionalCharges)],
@@ -942,17 +1005,15 @@ function App() {
         ? ['Additional charge note', appointment.additionalChargeNote]
         : null,
       ['Tax', currency(appointment.taxAmount)],
-      ['Payment method', paymentMethodLabel(appointment.paymentMethod)],
-      ['Total due', currency(totalForAppointment(appointment))],
     ]
       .filter((row): row is [string, string] => Boolean(row))
       .map(
         ([label, value]) => `
           <tr>
-            <td style="padding: 12px 0; border-bottom: 1px solid rgba(33, 76, 60, 0.08); color: #6a5c4d; font-size: 14px;">
+            <td style="padding: 10px 0; border-bottom: 1px solid rgba(33, 76, 60, 0.08); color: #1f1a16; font-size: 16px; font-weight: 700;">
               ${escapeHtml(label)}
             </td>
-            <td style="padding: 12px 0; border-bottom: 1px solid rgba(33, 76, 60, 0.08); color: #1f1a16; font-size: 16px; font-weight: 700; text-align: right;">
+            <td style="padding: 10px 0; border-bottom: 1px solid rgba(33, 76, 60, 0.08); color: #1f1a16; font-size: 16px; text-align: right;">
               ${escapeHtml(value)}
             </td>
           </tr>
@@ -960,32 +1021,46 @@ function App() {
       )
       .join('')
 
+    const intro = introText ? proseEmailBody(introText) : ''
+    const outro = outroText ? proseEmailBody(outroText) : ''
     const body = `
-      <p style="margin: 0 0 16px; font-size: 16px; line-height: 1.7; color: #2f2923;">Hi ${escapeHtml(appointment.customerName)},</p>
-      <p style="margin: 0 0 22px; font-size: 16px; line-height: 1.7; color: #2f2923;">
-        Thanks for scheduling your piano tuning appointment. Here is your invoice summary.
-      </p>
-      <p style="margin: 0 0 18px; font-size: 15px; line-height: 1.7; color: #2f2923;">
-        ${escapeHtml(
-          appointment.paymentMethod
-            ? `Recorded payment method: ${paymentMethodLabel(appointment.paymentMethod)}.`
-            : 'Payment options: Cash, Check, or Venmo.',
-        )}
-      </p>
-      <div style="padding: 20px 22px; border-radius: 22px; background: rgba(255, 255, 255, 0.65); border: 1px solid rgba(33, 76, 60, 0.08);">
+      ${intro}
+      <div style="padding: 16px 0 0; margin: 0 0 18px;">
         <table role="presentation" style="width: 100%; border-collapse: collapse;">
           ${rows}
+          <tr>
+            <td style="padding: 12px 0 8px; color: #6a5c4d; font-size: 16px;">__________________________</td>
+            <td></td>
+          </tr>
+          <tr>
+            <td style="padding: 0; color: #1f1a16; font-size: 18px; font-weight: 700;">
+              Total
+            </td>
+            <td style="padding: 0; color: #1f1a16; font-size: 18px; font-weight: 700; text-align: right;">
+              ${escapeHtml(currency(totalForAppointment(appointment)))}
+            </td>
+          </tr>
         </table>
       </div>
-      <p style="margin: 22px 0 0; font-size: 15px; line-height: 1.7; color: #2f2923;">${escapeHtml(settings.emailSignature)}</p>
+      <p style="margin: 0 0 10px; font-size: 16px; line-height: 1.7; color: #2f2923;">
+        <strong>${appointment.paymentMethod ? 'Payment method:' : 'Payment options:'}</strong> ${escapeHtml(
+          invoicePaymentLine(appointment).replace(/^Payment (method|options): /, ''),
+        )}
+      </p>
+      ${
+        venmoLink
+          ? `<p style="margin: 0 0 20px; font-size: 16px; line-height: 1.7; color: #2f2923;">
+              <a href="${venmoLink}" style="color: #2f6b85; text-decoration: underline;">Venmo Link</a>
+            </p>`
+          : ''
+      }
+      ${outro}
     `
 
     return emailShell({
       eyebrow: settings.businessName,
       title: 'Invoice',
       body,
-      ctaLabel: venmoLink ? `Pay ${currency(totalForAppointment(appointment))} with Venmo` : undefined,
-      ctaHref: venmoLink || undefined,
     })
   }
 
@@ -1022,15 +1097,15 @@ function App() {
     ].join('\n')
   }
 
-  function reminderHtml(customer: CustomerRecord, appointment: AppointmentRecord) {
-    return proseEmailHtml(reminderText(customer, appointment), {
+  function reminderHtml(customer: CustomerRecord, appointment: AppointmentRecord, messageText = reminderText(customer, appointment)) {
+    return proseEmailHtml(messageText, {
       eyebrow: settings.businessName,
       title: 'Time for your next tuning',
     })
   }
 
-  function followUpHtml(customer: CustomerRecord, appointment: AppointmentRecord) {
-    return proseEmailHtml(followUpText(customer, appointment), {
+  function followUpHtml(customer: CustomerRecord, appointment: AppointmentRecord, messageText = followUpText(customer, appointment)) {
+    return proseEmailHtml(messageText, {
       eyebrow: settings.businessName,
       title: 'Checking in after your tuning',
     })
@@ -2195,7 +2270,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                           kind: 'invoice',
                           recipient: customer.email,
                           subject: `Invoice from ${settings.businessName}`,
-                          message: invoiceText(appointment),
+                          message: invoiceEmailText(appointment),
                           title: 'Invoice',
                           statusMessage: `Invoice email sent to ${customer.name}.`,
                         })

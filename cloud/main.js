@@ -13,6 +13,7 @@ async function getRuntimeConfig() {
   cachedRuntimeConfig = {
     resendApiKey: process.env.RESEND_API_KEY || parseConfig.get('RESEND_API_KEY') || '',
     resendFromEmail: process.env.RESEND_FROM_EMAIL || parseConfig.get('RESEND_FROM_EMAIL') || '',
+    resendReplyTo: process.env.RESEND_REPLY_TO || parseConfig.get('RESEND_REPLY_TO') || '',
     twilioAccountSid: process.env.TWILIO_ACCOUNT_SID || parseConfig.get('TWILIO_ACCOUNT_SID') || '',
     twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || parseConfig.get('TWILIO_AUTH_TOKEN') || '',
     twilioApiKeySid: process.env.TWILIO_API_KEY_SID || parseConfig.get('TWILIO_API_KEY_SID') || '',
@@ -145,6 +146,7 @@ Parse.Cloud.define('sendBusinessEmail', async (request) => {
   const response = await resend.emails.send({
     from: config.resendFromEmail,
     to,
+    replyTo: config.resendReplyTo || undefined,
     subject,
     text,
     html,
@@ -221,6 +223,7 @@ Parse.Cloud.define('sendMarketingBlast', async (request) => {
   const response = await resend.emails.send({
     from: config.resendFromEmail,
     to,
+    replyTo: config.resendReplyTo || undefined,
     subject,
     text,
     html,
