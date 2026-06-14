@@ -5,6 +5,7 @@ import {
   type BusinessSettings,
   type CustomerInput,
   type CustomerRecord,
+  type PaymentMethod,
 } from '../types'
 import type ParseType from 'parse'
 
@@ -115,6 +116,7 @@ function toAppointmentRecord(object: Parse.Object): AppointmentRecord {
     additionalCharges: Number(object.get('additionalCharges') ?? 0),
     additionalChargeNote: object.get('additionalChargeNote') ?? '',
     taxAmount: Number(object.get('taxAmount') ?? 0),
+    paymentMethod: (object.get('paymentMethod') ?? '') as PaymentMethod,
     notes: object.get('notes') ?? '',
     status: object.get('status') ?? 'scheduled',
     invoiceSentAt: toIsoString(object.get('invoiceSentAt')),
@@ -251,6 +253,7 @@ export async function saveAppointment(input: AppointmentInput) {
   record.set('additionalCharges', input.additionalCharges)
   record.set('additionalChargeNote', input.additionalChargeNote.trim())
   record.set('taxAmount', input.taxAmount)
+  record.set('paymentMethod', input.paymentMethod)
   record.set('notes', input.notes.trim())
   record.set('status', input.status)
 

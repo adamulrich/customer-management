@@ -23,6 +23,7 @@ export type CustomerInput = Omit<
 }
 
 export type AppointmentStatus = 'scheduled' | 'completed' | 'invoiced' | 'paid'
+export type PaymentMethod = '' | 'cash' | 'check' | 'venmo'
 
 export type AppointmentRecord = {
   id: string
@@ -34,6 +35,7 @@ export type AppointmentRecord = {
   additionalCharges: number
   additionalChargeNote: string
   taxAmount: number
+  paymentMethod: PaymentMethod
   notes: string
   status: AppointmentStatus
   invoiceSentAt: string | null

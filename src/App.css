@@ -1,13 +1,22 @@
 .app-shell,
 .auth-shell,
 .setup-shell {
+  box-sizing: border-box;
   min-height: 100vh;
 }
 
 .app-shell {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 0.65rem;
   padding: 1rem;
   max-width: 1400px;
   margin: 0 auto;
+}
+
+.app-shell.customer-list-page {
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .app-banner,
@@ -28,30 +37,43 @@
 }
 
 .app-banner {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.7rem 1rem 0.75rem;
+  background: rgba(255, 250, 244, 0.84);
+}
+
+.app-banner-title-row,
+.app-banner-status-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 0.9rem 1.2rem;
-  background: rgba(255, 250, 244, 0.84);
+  gap: 0.75rem;
 }
 
 .app-banner-copy {
   display: flex;
-  align-items: baseline;
-  gap: 0.65rem;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
 }
 
 .app-banner h1 {
   margin: 0;
-  font-size: clamp(1.45rem, 2vw, 2rem);
+  font-size: clamp(1.25rem, 1.7vw, 1.7rem);
   color: #214c3c;
+  line-height: 1.05;
 }
 
 .app-version {
   color: #645749;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
+}
+
+.app-sync-status {
+  color: #645749;
+  font-size: 0.82rem;
+  white-space: nowrap;
 }
 
 .auth-header {
@@ -144,10 +166,6 @@
   justify-content: flex-start;
 }
 
-.customer-toolbar input {
-  max-width: 29rem;
-}
-
 .eyebrow {
   text-transform: uppercase;
   letter-spacing: 0.18em;
@@ -217,6 +235,12 @@
   margin-bottom: 0.75rem;
 }
 
+.section-title-compact {
+  margin: 0;
+  font-size: 1.6rem;
+  line-height: 1.05;
+}
+
 .stats-grid,
 .overview-grid,
 .reports-grid,
@@ -246,12 +270,48 @@
 }
 
 .customer-focus .panel:first-child {
-  min-height: 70vh;
+  min-height: 0;
 }
 
 .customer-focus .panel:first-child,
 .customer-focus .detail-card {
   display: grid;
+}
+
+.customer-focus {
+  min-height: 0;
+  height: 100%;
+}
+
+.customer-directory-panel {
+  min-height: 0;
+  height: 100%;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: start;
+  overflow: hidden;
+}
+
+.customer-directory-panel .panel-heading {
+  align-items: start;
+  margin-bottom: 0;
+}
+
+.customer-directory-heading {
+  margin-bottom: 0;
+}
+
+.customer-directory-controls {
+  display: grid;
+  gap: 0.5rem;
+  margin-bottom: 0.1rem;
+}
+
+.customer-directory-controls > input {
+  max-width: 29rem;
+}
+
+.customer-directory-controls .customer-toolbar {
+  gap: 0.65rem;
 }
 
 .panel,
@@ -267,7 +327,7 @@
 }
 
 .panel-heading.compact {
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.45rem;
 }
 
 .panel-heading h2,
@@ -290,7 +350,7 @@
 .queue-list,
 .quarter-list {
   display: grid;
-  gap: 0.55rem;
+  gap: 0.4rem;
 }
 
 .appointments-shell .appointment-list {
@@ -316,13 +376,20 @@
 }
 
 .customer-list {
-  max-height: 24rem;
+  max-height: none;
   overflow-y: scroll;
   padding-right: 0.25rem;
   align-content: start;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgba(33, 76, 60, 0.45) rgba(255, 255, 255, 0.45);
+}
+
+.customer-directory-panel .customer-list {
+  min-height: 0;
+  height: 100%;
+  align-self: stretch;
+  overflow-y: auto;
 }
 
 .customer-list::-webkit-scrollbar {
@@ -353,7 +420,7 @@
 
 .customer-card,
 .queue-card {
-  padding: 0.75rem 0.9rem;
+  padding: 0.58rem 0.8rem;
 }
 
 .queue-card > div:first-child {
@@ -376,7 +443,7 @@
 .customer-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.5rem 1rem;
+  gap: 0.35rem 0.8rem;
   align-items: center;
   background: rgba(255, 255, 255, 0.54);
 }
@@ -393,14 +460,14 @@
 }
 
 .customer-card-primary strong {
-  font-size: 1rem;
-  line-height: 1.2;
+  font-size: 0.96rem;
+  line-height: 1.15;
 }
 
 .customer-card-secondary {
   text-align: right;
   color: #514638;
-  font-size: 0.95rem;
+  font-size: 0.88rem;
   white-space: nowrap;
 }
 
@@ -433,6 +500,113 @@
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 0.75rem;
+}
+
+.service-history-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.service-history-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(10.75rem, 0.9fr) minmax(8rem, auto);
+  gap: 0.65rem;
+  align-items: center;
+  width: auto;
+  min-width: 0;
+}
+
+.service-history-customer,
+.service-history-date,
+.service-history-summary {
+  min-width: 0;
+}
+
+.service-history-date {
+  white-space: nowrap;
+}
+
+.service-history-summary {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.service-history-delete {
+  justify-self: end;
+  position: relative;
+  z-index: 1;
+}
+
+.recent-sales-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(10.75rem, 0.9fr) minmax(9rem, auto);
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.recent-sales-customer,
+.recent-sales-date,
+.recent-sales-summary {
+  min-width: 0;
+}
+
+.recent-sales-date {
+  white-space: nowrap;
+}
+
+.recent-sales-summary {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 760px) {
+  .service-history-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'customer date'
+      'summary summary';
+    gap: 0.3rem 0.65rem;
+    align-items: start;
+  }
+
+  .service-history-customer {
+    grid-area: customer;
+  }
+
+  .service-history-date {
+    grid-area: date;
+    text-align: right;
+  }
+
+  .service-history-summary {
+    grid-area: summary;
+    text-align: left;
+  }
+
+  .recent-sales-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'customer date'
+      'summary summary';
+    gap: 0.3rem 0.65rem;
+    align-items: start;
+  }
+
+  .recent-sales-customer {
+    grid-area: customer;
+  }
+
+  .recent-sales-date {
+    grid-area: date;
+    text-align: right;
+  }
+
+  .recent-sales-summary {
+    grid-area: summary;
+    text-align: left;
+  }
 }
 
 .appointments-dashboard,
@@ -645,6 +819,14 @@
   background: transparent;
   padding: 0.8rem;
   cursor: pointer;
+}
+
+.service-history-main {
+  display: grid;
+  grid-template-columns: minmax(13rem, 1.15fr) minmax(14rem, 1fr) minmax(9rem, auto);
+  justify-content: stretch;
+  gap: 0.9rem;
+  align-items: center;
 }
 
 .detail-card {
@@ -901,8 +1083,54 @@ textarea {
   gap: 0.45rem;
 }
 
+.stat-card-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.stat-card-action {
+  flex-shrink: 0;
+}
+
+.stat-card-select {
+  width: auto;
+  min-width: 7rem;
+  padding: 0.4rem 2rem 0.4rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+}
+
 .stat-card strong {
   font-size: 2rem;
+}
+
+.composer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(23, 19, 15, 0.34);
+  backdrop-filter: blur(6px);
+}
+
+.composer-modal {
+  width: min(100%, 760px);
+  display: grid;
+  gap: 0.8rem;
+  padding: 1rem;
+  border: 1px solid rgba(28, 42, 36, 0.14);
+  border-radius: 28px;
+  background: rgba(255, 250, 244, 0.96);
+  box-shadow: 0 18px 60px rgba(66, 40, 8, 0.16);
+}
+
+.composer-note {
+  margin: 0;
+  color: #645749;
 }
 
 .auth-shell,
@@ -939,6 +1167,7 @@ pre {
 
 @media (max-width: 980px) {
   .overview-grid,
+  .reports-grid,
   .workspace-grid,
   .workflow-grid,
   .form-grid,
@@ -947,13 +1176,23 @@ pre {
     grid-template-columns: 1fr;
   }
 
-  .app-banner {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
   .auth-header {
     grid-template-columns: 1fr;
+  }
+
+  .stat-card-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .stat-card-action {
+    width: 100%;
+  }
+
+  .stat-card-select {
+    width: 100%;
+    min-width: 0;
   }
 
   .tab-bar {
@@ -970,28 +1209,26 @@ pre {
 
   .calendar-weekdays,
   .calendar-grid {
-    grid-template-columns: repeat(7, minmax(3.25rem, 1fr));
-    overflow-x: auto;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
   }
 
   .calendar-day {
-    min-height: 5.5rem;
+    min-height: 4.8rem;
   }
 
   .customer-list {
-    max-height: 20rem;
     padding-right: 0;
   }
 
   .customer-card {
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.4rem 0.8rem;
+    gap: 0.3rem 0.65rem;
   }
 
   .customer-card-secondary {
     text-align: right;
     white-space: nowrap;
-    font-size: 0.9rem;
+    font-size: 0.84rem;
   }
 
   .app-shell {
@@ -999,7 +1236,7 @@ pre {
   }
 }
 
-@media (max-width: 700px) {
+@media (max-width: 620px) {
   .app-shell,
   .auth-shell,
   .setup-shell {
@@ -1025,8 +1262,43 @@ pre {
     padding-right: 0.9rem;
   }
 
-  .customer-toolbar input {
+  .app-shell {
+    min-height: 100dvh;
+  }
+
+  .app-shell.customer-list-page {
+    height: 100dvh;
+  }
+
+  .app-banner {
+    padding-top: 0.65rem;
+    padding-bottom: 0.65rem;
+  }
+
+  .app-banner-title-row,
+  .app-banner-status-row {
+    gap: 0.5rem;
+  }
+
+  .app-banner h1 {
+    font-size: 1rem;
+  }
+
+  .app-version,
+  .app-sync-status {
+    font-size: 0.76rem;
+  }
+
+  .customer-directory-controls {
+    gap: 0.45rem;
+  }
+
+  .customer-directory-controls > input {
     max-width: 100%;
+  }
+
+  .customer-toolbar {
+    gap: 0.4rem;
   }
 
   .appointment-table {
@@ -1043,11 +1315,48 @@ pre {
     font-size: 0.625rem;
   }
 
+  .service-history-main {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.2rem;
+    align-items: start;
+  }
+
+  .recent-sales-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.2rem;
+    align-items: start;
+  }
+
+  .service-history-summary {
+    text-align: left;
+  }
+
+  .recent-sales-summary {
+    text-align: left;
+  }
+
   .tab-button,
   .ghost-button,
   .secondary-button,
   .primary-button {
     padding: 0.48rem 0.72rem;
     font-size: 0.9rem;
+  }
+
+  .section-title-compact {
+    font-size: 1.2rem;
+  }
+
+  .customer-card,
+  .queue-card {
+    padding: 0.52rem 0.72rem;
+  }
+
+  .customer-card-primary strong {
+    font-size: 0.92rem;
+  }
+
+  .customer-search-meta {
+    font-size: 0.84rem;
   }
 }

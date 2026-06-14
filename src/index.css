@@ -32,6 +32,10 @@ body {
   min-height: 100vh;
 }
 
+body.customer-list-page-body {
+  overflow: hidden;
+}
+
 h1 {
   font-size: clamp(2.2rem, 4vw, 4.3rem);
   line-height: 0.98;

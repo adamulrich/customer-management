@@ -8,6 +8,7 @@ import {
   endOfMonth,
   endOfQuarter,
   endOfWeek,
+  endOfYear,
   format,
   isAfter,
   isBefore,
@@ -17,6 +18,7 @@ import {
   startOfMonth,
   startOfQuarter,
   startOfWeek,
+  startOfYear,
   subMonths,
   subQuarters,
 } from 'date-fns'
@@ -47,6 +49,7 @@ import {
   defaultSettings,
   type AppointmentInput,
   type AppointmentRecord,
+  type PaymentMethod,
   type AppointmentStatus,
   type BusinessSettings,
   type CustomerInput,
@@ -89,6 +92,7 @@ const emptyAppointmentForm = (): AppointmentInput => ({
   additionalCharges: 0,
   additionalChargeNote: '',
   taxAmount: 0,
+  paymentMethod: '',
   notes: '',
   status: 'scheduled',
 })
@@ -123,6 +127,19 @@ function shortDate(value: string) {
 
 function shortDateTime(value: string) {
   return format(parseISO(value), 'MMM d h:mm a')
+}
+
+function paymentMethodLabel(value: PaymentMethod) {
+  switch (value) {
+    case 'cash':
+      return 'Cash'
+    case 'check':
+      return 'Check'
+    case 'venmo':
+      return 'Venmo'
+    default:
+      return 'Not recorded'
+  }
 }
 
 function calendarEventClass(status: AppointmentStatus) {
@@ -186,22 +203,41 @@ function StatCard({
   label,
   value,
   detail,
+  action,
 }: {
   label: string
   value: string
   detail: string
+  action?: React.ReactNode
 }) {
   return (
     <article className="stat-card">
-      <span>{label}</span>
+      <div className="stat-card-header">
+        <span>{label}</span>
+        {action ? <div className="stat-card-action">{action}</div> : null}
+      </div>
       <strong>{value}</strong>
       <p>{detail}</p>
     </article>
   )
 }
 
+type MessageComposerState = {
+  appointmentId?: string
+  channel: 'email' | 'sms'
+  customerId?: string
+  kind: 'invoice' | 'reminder' | 'follow_up'
+  message: string
+  recipient: string
+  statusMessage: string
+  subject: string
+  title: string
+}
+
 function App() {
   const appVersion = __APP_VERSION__
+  const [reportPeriod, setReportPeriod] = useState<'week' | 'month' | 'quarter' | 'year'>('month')
+  const [selectedQuarterLabel, setSelectedQuarterLabel] = useState('')
   const [user, setUser] = useState(() => getCurrentUser())
   const [customers, setCustomers] = useState<CustomerRecord[]>([])
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([])
@@ -225,6 +261,7 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [statusText, setStatusText] = useState('Ready.')
   const [errorText, setErrorText] = useState('')
+  const [messageComposer, setMessageComposer] = useState<MessageComposerState | null>(null)
 
   const refreshData = useEffectEvent(async () => {
     const [nextCustomers, nextAppointments, nextSettings] = await Promise.all([
@@ -343,9 +380,23 @@ function App() {
   const selectedVisibleCustomer =
     filteredCustomers.find((customer) => customer.id === selectedCustomerId) ??
     null
+  const isCustomerDirectoryView =
+    activeTab === 'customers' && !isCustomerFormOpen && !selectedVisibleCustomer
+
+  useEffect(() => {
+    if (!isCustomerDirectoryView) {
+      document.body.classList.remove('customer-list-page-body')
+      return
+    }
+
+    document.body.classList.add('customer-list-page-body')
+
+    return () => {
+      document.body.classList.remove('customer-list-page-body')
+    }
+  }, [isCustomerDirectoryView])
 
   const quarterSummary = quartersFromAppointments(appointments)
-  const currentQuarter = quarterSummary[0] ?? { sales: 0, tax: 0, count: 0, label: 'This quarter' }
   const outstandingInvoices = appointments.filter(
     (appointment) => appointment.status !== 'paid',
   )
@@ -370,15 +421,56 @@ function App() {
       currency(totalForAppointment(appointment)),
     ].some((field) => field.toLowerCase().includes(query))
   })
-  const totalSales = completedAppointments.reduce(
+  const reportRange = (() => {
+    const now = new Date()
+    switch (reportPeriod) {
+      case 'week':
+        return {
+          label: 'This week',
+          start: startOfWeek(now, { weekStartsOn: 0 }),
+          end: endOfWeek(now, { weekStartsOn: 0 }),
+        }
+      case 'quarter':
+        return {
+          label: 'This quarter',
+          start: startOfQuarter(now),
+          end: endOfQuarter(now),
+        }
+      case 'year':
+        return {
+          label: 'This year',
+          start: startOfYear(now),
+          end: endOfYear(now),
+        }
+      case 'month':
+      default:
+        return {
+          label: 'This month',
+          start: startOfMonth(now),
+          end: endOfMonth(now),
+        }
+    }
+  })()
+  const periodAppointments = completedAppointments.filter((appointment) => {
+    const date = parseISO(appointment.appointmentDate)
+    return !isBefore(date, reportRange.start) && !isAfter(date, reportRange.end)
+  })
+  const periodSales = periodAppointments.reduce(
     (sum, appointment) =>
       sum + appointment.quotedEstimate + appointment.travelCharge + appointment.additionalCharges,
     0,
   )
-  const totalTaxCollected = completedAppointments.reduce(
+  const periodTaxCollected = periodAppointments.reduce(
     (sum, appointment) => sum + appointment.taxAmount,
     0,
   )
+  const activeQuarterLabel = quarterSummary.some((quarter) => quarter.label === selectedQuarterLabel)
+    ? selectedQuarterLabel
+    : (quarterSummary[0]?.label ?? '')
+  const selectedQuarter =
+    quarterSummary.find((quarter) => quarter.label === activeQuarterLabel) ??
+    quarterSummary[0] ??
+    null
   const sortedAppointments = [...appointments].sort((left, right) =>
     left.appointmentDate.localeCompare(right.appointmentDate),
   )
@@ -409,6 +501,17 @@ function App() {
     }
   }, [selectedCustomerId, selectedVisibleCustomer])
 
+  useEffect(() => {
+    if (!quarterSummary.length) {
+      setSelectedQuarterLabel('')
+      return
+    }
+
+    if (!quarterSummary.some((quarter) => quarter.label === selectedQuarterLabel)) {
+      setSelectedQuarterLabel(quarterSummary[0].label)
+    }
+  }, [quarterSummary, selectedQuarterLabel])
+
   async function runTask<T>(message: string, task: () => Promise<T>) {
     setLoading(true)
     setErrorText('')
@@ -422,6 +525,65 @@ function App() {
       return null
     } finally {
       setLoading(false)
+    }
+  }
+
+  function openMessageComposer(input: MessageComposerState) {
+    setErrorText('')
+    setMessageComposer(input)
+  }
+
+  async function handleComposerSend() {
+    if (!messageComposer) {
+      return
+    }
+
+    const updated = await runTask(
+      `Sending ${messageComposer.channel === 'email' ? 'email' : 'text'}…`,
+      async () => {
+        if (messageComposer.channel === 'email') {
+          await sendBusinessEmail({
+            to: messageComposer.recipient,
+            subject: messageComposer.subject,
+            text: messageComposer.message,
+            html: proseEmailHtml(messageComposer.message, {
+              eyebrow: settings.businessName,
+              title: messageComposer.title,
+            }),
+            customerId: messageComposer.customerId,
+            appointmentId: messageComposer.appointmentId,
+            kind: messageComposer.kind,
+          })
+        } else {
+          await sendBusinessSms({
+            to: messageComposer.recipient,
+            body: messageComposer.message,
+            customerId: messageComposer.customerId,
+            appointmentId: messageComposer.appointmentId,
+            kind: messageComposer.kind,
+          })
+        }
+
+        if (messageComposer.kind === 'invoice' && messageComposer.appointmentId) {
+          await markInvoiceSent(messageComposer.appointmentId)
+        }
+
+        if (messageComposer.kind === 'reminder' && messageComposer.customerId) {
+          await markReminderSent(messageComposer.customerId)
+        }
+
+        if (messageComposer.kind === 'follow_up' && messageComposer.appointmentId) {
+          await markFollowUpSent(messageComposer.appointmentId)
+        }
+
+        return true
+      },
+    )
+
+    if (updated) {
+      await refreshData()
+      setMessageComposer(null)
+      setStatusText(messageComposer.statusMessage)
     }
   }
 
@@ -486,6 +648,7 @@ function App() {
         additionalCharges: saved.additionalCharges,
         additionalChargeNote: saved.additionalChargeNote,
         taxAmount: saved.taxAmount,
+        paymentMethod: saved.paymentMethod,
         notes: saved.notes,
         status: saved.status,
       })
@@ -562,6 +725,7 @@ function App() {
       additionalCharges: appointment.additionalCharges,
       additionalChargeNote: appointment.additionalChargeNote,
       taxAmount: appointment.taxAmount,
+      paymentMethod: appointment.paymentMethod,
       notes: appointment.notes,
       status: appointment.status,
     })
@@ -677,6 +841,9 @@ function App() {
         : null,
       `Tax: ${currency(appointment.taxAmount)}`,
       `Total: ${currency(totalForAppointment(appointment))}`,
+      appointment.paymentMethod
+        ? `Paid via: ${paymentMethodLabel(appointment.paymentMethod)}`
+        : 'Payment options: Cash, Check, Venmo',
       '',
       `Pay with Venmo: ${venmoLink}`,
       '',
@@ -775,6 +942,7 @@ function App() {
         ? ['Additional charge note', appointment.additionalChargeNote]
         : null,
       ['Tax', currency(appointment.taxAmount)],
+      ['Payment method', paymentMethodLabel(appointment.paymentMethod)],
       ['Total due', currency(totalForAppointment(appointment))],
     ]
       .filter((row): row is [string, string] => Boolean(row))
@@ -796,6 +964,13 @@ function App() {
       <p style="margin: 0 0 16px; font-size: 16px; line-height: 1.7; color: #2f2923;">Hi ${escapeHtml(appointment.customerName)},</p>
       <p style="margin: 0 0 22px; font-size: 16px; line-height: 1.7; color: #2f2923;">
         Thanks for scheduling your piano tuning appointment. Here is your invoice summary.
+      </p>
+      <p style="margin: 0 0 18px; font-size: 15px; line-height: 1.7; color: #2f2923;">
+        ${escapeHtml(
+          appointment.paymentMethod
+            ? `Recorded payment method: ${paymentMethodLabel(appointment.paymentMethod)}.`
+            : 'Payment options: Cash, Check, or Venmo.',
+        )}
       </p>
       <div style="padding: 20px 22px; border-radius: 22px; background: rgba(255, 255, 255, 0.65); border: 1px solid rgba(33, 76, 60, 0.08);">
         <table role="presentation" style="width: 100%; border-collapse: collapse;">
@@ -904,7 +1079,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
               <span className="auth-mark-dot auth-mark-dot-b"></span>
               <span className="auth-mark-dot auth-mark-dot-c"></span>
             </div>
-            <h1>Prime Pianos Customer Management</h1>
+            <h1>Prime Pianos</h1>
           </div>
 
           <form className="auth-form" onSubmit={handleLogin}>
@@ -946,15 +1121,20 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
   }
 
   return (
-    <main className="app-shell">
+    <main className={isCustomerDirectoryView ? 'app-shell customer-list-page' : 'app-shell'}>
       <section className="app-banner">
-        <div className="app-banner-copy">
-          <h1>Prime Pianos Customer Management</h1>
+        <div className="app-banner-title-row">
+          <div className="app-banner-copy">
+            <h1>Prime Pianos</h1>
+          </div>
           <span className="app-version">v{appVersion}</span>
         </div>
-        <button className="ghost-button" onClick={handleLogout}>
-          Log out
-        </button>
+        <div className="app-banner-status-row">
+          <span className="app-sync-status">{loading ? 'Working' : 'Synced'}</span>
+          <button className="ghost-button" onClick={handleLogout}>
+            Log out
+          </button>
+        </div>
       </section>
 
       <nav className="tab-bar" aria-label="Primary">
@@ -969,83 +1149,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
         ))}
       </nav>
 
-      <section className="status-banner">
-        <p>{statusText}</p>
-        <p>{loading ? 'Working…' : 'Synced.'}</p>
-      </section>
       {errorText ? <p className="error-text">{errorText}</p> : null}
-
-      {activeTab === 'reports' ? (
-        <>
-          <section className="stats-grid">
-            <StatCard
-              label="Total sales"
-              value={currency(totalSales)}
-              detail={`${completedAppointments.length} completed or billed appointments`}
-            />
-            <StatCard
-              label="Total tax collected"
-              value={currency(totalTaxCollected)}
-              detail="Sum of all recorded tax amounts"
-            />
-            <StatCard
-              label={currentQuarter.label}
-              value={currency(currentQuarter.sales)}
-              detail={`${currency(currentQuarter.tax)} tax collected this quarter`}
-            />
-            <StatCard
-              label="Outstanding invoices"
-              value={String(outstandingInvoices.length)}
-              detail={`${currency(outstandingInvoices.reduce((sum, appointment) => sum + totalForAppointment(appointment), 0))} not marked paid`}
-            />
-          </section>
-
-          <section className="overview-grid">
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">Pipeline</p>
-                  <h2>Upcoming attention</h2>
-                </div>
-              </div>
-              <div className="queue-list">
-                {appointments.slice(0, 5).map((appointment) => (
-                  <button
-                    key={appointment.id}
-                    className="queue-card"
-                    onClick={() => openAppointmentDetails(appointment)}
-                  >
-                    <strong>{appointment.customerName}</strong>
-                    <span>{fullDate(appointment.appointmentDate)}</span>
-                    <span>
-                      {appointment.status} • {currency(totalForAppointment(appointment))}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </article>
-
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">Taxes</p>
-                  <h2>Quarterly filing snapshot</h2>
-                </div>
-              </div>
-              <div className="quarter-list">
-                {quarterSummary.map((quarter) => (
-                  <div key={quarter.label} className="quarter-row">
-                    <strong>{quarter.label}</strong>
-                    <span>{currency(quarter.sales)} sales</span>
-                    <span>{currency(quarter.tax)} tax</span>
-                    <span>{quarter.count} appointments</span>
-                  </div>
-                ))}
-              </div>
-            </article>
-          </section>
-        </>
-      ) : null}
 
       {activeTab === 'customers' ? (
         <section className="workspace-grid single customer-focus">
@@ -1298,26 +1402,26 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
               </div>
             </article>
           ) : (
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">Directory</p>
-                  <h2>Customers</h2>
-                </div>
+            <article className="panel customer-directory-panel">
+              <div className="panel-heading compact customer-directory-heading">
+                <h2 className="section-title-compact">Customers</h2>
+              </div>
+
+              <div className="customer-directory-controls">
+                <input
+                  placeholder="Search name, phone, email, address"
+                  value={filters.customerSearch}
+                  onChange={(event) =>
+                    setFilters((current) => ({ ...current, customerSearch: event.target.value }))
+                  }
+                />
                 <div className="customer-toolbar">
-                  <input
-                    placeholder="Search name, phone, email, address"
-                    value={filters.customerSearch}
-                    onChange={(event) =>
-                      setFilters((current) => ({ ...current, customerSearch: event.target.value }))
-                    }
-                  />
-                  <button className="secondary-button" onClick={startNewCustomer}>
-                    Add customer
-                  </button>
                   <span className="customer-search-meta">
                     {filteredCustomers.length} of {customers.length}
                   </span>
+                  <button className="secondary-button" onClick={startNewCustomer}>
+                    Add customer
+                  </button>
                   {filters.customerSearch ? (
                     <button
                       className="ghost-button"
@@ -1369,24 +1473,29 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
         <>
           <section className="stats-grid">
             <StatCard
-              label="Total sales"
-              value={currency(totalSales)}
-              detail={`${completedAppointments.length} completed or billed appointments`}
-            />
-            <StatCard
-              label="Total tax collected"
-              value={currency(totalTaxCollected)}
-              detail="Sum of all recorded tax amounts"
-            />
-            <StatCard
-              label={currentQuarter.label}
-              value={currency(currentQuarter.sales)}
-              detail={`${currency(currentQuarter.tax)} tax collected this quarter`}
-            />
-            <StatCard
               label="Outstanding invoices"
               value={String(outstandingInvoices.length)}
               detail={`${currency(outstandingInvoices.reduce((sum, appointment) => sum + totalForAppointment(appointment), 0))} not marked paid`}
+            />
+            <StatCard
+              label={reportRange.label}
+              value={currency(periodSales)}
+              detail={`${currency(periodTaxCollected)} tax collected • ${periodAppointments.length} completed or billed appointments`}
+              action={
+                <select
+                  className="stat-card-select"
+                  aria-label="Sales report period"
+                  value={reportPeriod}
+                  onChange={(event) =>
+                    setReportPeriod(event.target.value as 'week' | 'month' | 'quarter' | 'year')
+                  }
+                >
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                  <option value="quarter">Quarter</option>
+                  <option value="year">Year</option>
+                </select>
+              }
             />
           </section>
 
@@ -1397,16 +1506,30 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   <p className="eyebrow">Taxes</p>
                   <h2>Quarterly filing snapshot</h2>
                 </div>
+                <select
+                  className="stat-card-select"
+                  aria-label="Tax filing quarter"
+                  value={activeQuarterLabel}
+                  onChange={(event) => setSelectedQuarterLabel(event.target.value)}
+                >
+                  {quarterSummary.map((quarter) => (
+                    <option key={quarter.label} value={quarter.label}>
+                      {quarter.label}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="quarter-list">
-                {quarterSummary.map((quarter) => (
-                  <div key={quarter.label} className="quarter-row">
-                    <strong>{quarter.label}</strong>
-                    <span>{currency(quarter.sales)} sales</span>
-                    <span>{currency(quarter.tax)} tax</span>
-                    <span>{quarter.count} appointments</span>
+                {selectedQuarter ? (
+                  <div className="quarter-row">
+                    <strong>{selectedQuarter.label}</strong>
+                    <span>{currency(selectedQuarter.sales)} sales</span>
+                    <span>{currency(selectedQuarter.tax)} tax</span>
+                    <span>{selectedQuarter.count} appointments</span>
                   </div>
-                ))}
+                ) : (
+                  <p className="empty-state">No quarterly tax history is recorded yet.</p>
+                )}
               </div>
             </article>
 
@@ -1421,12 +1544,12 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                 {completedAppointments.slice(0, 8).map((appointment) => (
                   <button
                     key={appointment.id}
-                    className="queue-card"
+                    className="queue-card recent-sales-row"
                     onClick={() => openAppointmentDetails(appointment)}
                   >
-                    <strong>{appointment.customerName}</strong>
-                    <span>{fullDate(appointment.appointmentDate)}</span>
-                    <span>
+                    <strong className="recent-sales-customer">{appointment.customerName}</strong>
+                    <span className="recent-sales-date">{fullDate(appointment.appointmentDate)}</span>
+                    <span className="recent-sales-summary">
                       {currency(
                         appointment.quotedEstimate +
                           appointment.travelCharge +
@@ -1591,20 +1714,20 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
 
             <div className="appointment-list">
               {sortedAppointments.map((appointment) => (
-                <div key={appointment.id} className="appointment-card">
+                <div key={appointment.id} className="appointment-card service-history-row">
                   <button
                     type="button"
-                    className="appointment-main"
+                    className="appointment-main service-history-main"
                     onClick={() => openAppointmentDetails(appointment)}
                   >
-                    <strong>{appointment.customerName}</strong>
-                    <span>{fullDate(appointment.appointmentDate)}</span>
-                    <span>
+                    <strong className="service-history-customer">{appointment.customerName}</strong>
+                    <span className="service-history-date">{fullDate(appointment.appointmentDate)}</span>
+                    <span className="service-history-summary">
                       {appointment.status} • {currency(totalForAppointment(appointment))}
                     </span>
                   </button>
                   <button
-                    className="ghost-button danger"
+                    className="ghost-button danger service-history-delete"
                     onClick={() => handleDeleteAppointment(appointment.id)}
                   >
                     Delete
@@ -1740,6 +1863,23 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     <option value="completed">Completed</option>
                     <option value="invoiced">Invoiced</option>
                     <option value="paid">Paid</option>
+                  </select>
+                </label>
+                <label>
+                  Payment method
+                  <select
+                    value={appointmentForm.paymentMethod}
+                    onChange={(event) =>
+                      setAppointmentForm((current) => ({
+                        ...current,
+                        paymentMethod: event.target.value as PaymentMethod,
+                      }))
+                    }
+                  >
+                    <option value="">Not recorded</option>
+                    <option value="cash">Cash</option>
+                    <option value="check">Check</option>
+                    <option value="venmo">Venmo</option>
                   </select>
                 </label>
                 <label>
@@ -1899,6 +2039,10 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     <strong>{currency(selectedAppointment.taxAmount)}</strong>
                   </div>
                   <div className="summary-item">
+                    <span>Payment method</span>
+                    <strong>{paymentMethodLabel(selectedAppointment.paymentMethod)}</strong>
+                  </div>
+                  <div className="summary-item">
                     <span>Phone</span>
                     <strong>
                       {customerMap.get(selectedAppointment.customerId)?.phone ? (
@@ -1982,20 +2126,20 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
 
             <div className="appointment-list">
               {filteredServiceHistoryAppointments.map((appointment) => (
-                <div key={appointment.id} className="appointment-card">
+                <div key={appointment.id} className="appointment-card service-history-row">
                   <button
                     type="button"
-                    className="appointment-main"
+                    className="appointment-main service-history-main"
                     onClick={() => openAppointmentDetails(appointment)}
                   >
-                    <strong>{appointment.customerName}</strong>
-                    <span>{fullDate(appointment.appointmentDate)}</span>
-                    <span>
+                    <strong className="service-history-customer">{appointment.customerName}</strong>
+                    <span className="service-history-date">{fullDate(appointment.appointmentDate)}</span>
+                    <span className="service-history-summary">
                       {appointment.status} • {currency(totalForAppointment(appointment))}
                     </span>
                   </button>
                   <button
-                    className="ghost-button danger"
+                    className="ghost-button danger service-history-delete"
                     onClick={() => handleDeleteAppointment(appointment.id)}
                   >
                     Delete
@@ -2044,20 +2188,32 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                           setErrorText('This customer does not have an email address.')
                           return
                         }
+                        openMessageComposer({
+                          channel: 'email',
+                          customerId: customer.id,
+                          appointmentId: appointment.id,
+                          kind: 'invoice',
+                          recipient: customer.email,
+                          subject: `Invoice from ${settings.businessName}`,
+                          message: invoiceText(appointment),
+                          title: 'Invoice',
+                          statusMessage: `Invoice email sent to ${customer.name}.`,
+                        })
+                        return
                         const message = invoiceText(appointment)
                         void runTask('Sending invoice email…', async () => {
                           await sendBusinessEmail({
-                            to: customer.email,
+                            to: customer!.email,
                             subject: `Invoice from ${settings.businessName}`,
                             text: message,
                             html: invoiceHtml(appointment),
-                            customerId: customer.id,
+                            customerId: customer!.id,
                             appointmentId: appointment.id,
                             kind: 'invoice',
                           })
                           await markInvoiceSent(appointment.id)
                           await refreshData()
-                          setStatusText(`Invoice email sent to ${customer.name}.`)
+                          setStatusText(`Invoice email sent to ${customer!.name}.`)
                         })
                       }}
                     >
@@ -2071,18 +2227,30 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                           setErrorText('This customer does not have a phone number.')
                           return
                         }
+                        openMessageComposer({
+                          channel: 'sms',
+                          customerId: customer.id,
+                          appointmentId: appointment.id,
+                          kind: 'invoice',
+                          recipient: customer.phone,
+                          subject: '',
+                          message: invoiceText(appointment),
+                          title: 'Invoice text',
+                          statusMessage: `Invoice text sent to ${customer.name}.`,
+                        })
+                        return
                         const message = invoiceText(appointment)
                         void runTask('Sending invoice text…', async () => {
                           await sendBusinessSms({
-                            to: customer.phone,
+                            to: customer!.phone,
                             body: message,
-                            customerId: customer.id,
+                            customerId: customer!.id,
                             appointmentId: appointment.id,
                             kind: 'invoice',
                           })
                           await markInvoiceSent(appointment.id)
                           await refreshData()
-                          setStatusText(`Invoice text sent to ${customer.name}.`)
+                          setStatusText(`Invoice text sent to ${customer!.name}.`)
                         })
                       }}
                     >
@@ -2125,6 +2293,18 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                           setErrorText('This customer does not have an email address.')
                           return
                         }
+                        openMessageComposer({
+                          channel: 'email',
+                          customerId: customer.id,
+                          appointmentId: lastService.id,
+                          kind: 'reminder',
+                          recipient: customer.email,
+                          subject: 'Time to schedule your next piano tuning',
+                          message: reminderText(customer, lastService),
+                          title: 'Time for your next tuning',
+                          statusMessage: `Reminder email sent to ${customer.name}.`,
+                        })
+                        return
                         const message = reminderText(customer, lastService)
                         void runTask('Sending reminder email…', async () => {
                           await sendBusinessEmail({
@@ -2151,6 +2331,18 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                           setErrorText('This customer does not have a phone number.')
                           return
                         }
+                        openMessageComposer({
+                          channel: 'sms',
+                          customerId: customer.id,
+                          appointmentId: lastService.id,
+                          kind: 'reminder',
+                          recipient: customer.phone,
+                          subject: '',
+                          message: reminderText(customer, lastService),
+                          title: 'Reminder text',
+                          statusMessage: `Reminder text sent to ${customer.name}.`,
+                        })
+                        return
                         const message = reminderText(customer, lastService)
                         void runTask('Sending reminder text…', async () => {
                           await sendBusinessSms({
@@ -2197,6 +2389,18 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                           setErrorText('This customer does not have an email address.')
                           return
                         }
+                        openMessageComposer({
+                          channel: 'email',
+                          customerId: customer.id,
+                          appointmentId: appointment.id,
+                          kind: 'follow_up',
+                          recipient: customer.email,
+                          subject: 'Checking in on your piano',
+                          message: followUpText(customer, appointment),
+                          title: 'Checking in after your tuning',
+                          statusMessage: `Follow-up email sent to ${customer.name}.`,
+                        })
+                        return
                         const message = followUpText(customer, appointment)
                         void runTask('Sending follow-up email…', async () => {
                           await sendBusinessEmail({
@@ -2223,6 +2427,18 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                           setErrorText('This customer does not have a phone number.')
                           return
                         }
+                        openMessageComposer({
+                          channel: 'sms',
+                          customerId: customer.id,
+                          appointmentId: appointment.id,
+                          kind: 'follow_up',
+                          recipient: customer.phone,
+                          subject: '',
+                          message: followUpText(customer, appointment),
+                          title: 'Follow-up text',
+                          statusMessage: `Follow-up text sent to ${customer.name}.`,
+                        })
+                        return
                         const message = followUpText(customer, appointment)
                         void runTask('Sending follow-up text…', async () => {
                           await sendBusinessSms({
@@ -2246,7 +2462,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
             </div>
           </article>
 
-          <article className="panel">
+          <article className="panel" hidden>
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">Marketing</p>
@@ -2322,6 +2538,70 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
             </div>
           </article>
         </section>
+      ) : null}
+
+      {messageComposer ? (
+        <div className="composer-overlay" role="dialog" aria-modal="true" aria-labelledby="composer-title">
+          <div className="composer-modal">
+            <div className="panel-heading compact">
+              <div>
+                <p className="eyebrow">Review Message</p>
+                <h2 id="composer-title">
+                  {messageComposer.channel === 'email' ? 'Confirm email' : 'Confirm text'}
+                </h2>
+              </div>
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => setMessageComposer(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void handleComposerSend()}
+                  disabled={loading}
+                >
+                  Send now
+                </button>
+              </div>
+            </div>
+            <p className="composer-note">
+              This will be sent via the configured cloud {messageComposer.channel === 'email' ? 'email' : 'text'} service.
+            </p>
+            <label className="full-width">
+              To
+              <input value={messageComposer.recipient} readOnly />
+            </label>
+            {messageComposer.channel === 'email' ? (
+              <label className="full-width">
+                Subject
+                <input
+                  value={messageComposer.subject}
+                  onChange={(event) =>
+                    setMessageComposer((current) =>
+                      current ? { ...current, subject: event.target.value } : current,
+                    )
+                  }
+                />
+              </label>
+            ) : null}
+            <label className="full-width">
+              Message
+              <textarea
+                rows={12}
+                value={messageComposer.message}
+                onChange={(event) =>
+                  setMessageComposer((current) =>
+                    current ? { ...current, message: event.target.value } : current,
+                  )
+                }
+              />
+            </label>
+          </div>
+        </div>
       ) : null}
 
       {activeTab === 'settings' ? (
