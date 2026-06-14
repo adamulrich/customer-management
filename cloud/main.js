@@ -3,6 +3,14 @@ const { Resend } = require('resend')
 
 let cachedRuntimeConfig = null
 
+function optionalString(value) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  return value.trim()
+}
+
 async function getRuntimeConfig() {
   if (cachedRuntimeConfig) {
     return cachedRuntimeConfig
@@ -11,15 +19,16 @@ async function getRuntimeConfig() {
   const parseConfig = await Parse.Config.get({ useMasterKey: true })
 
   cachedRuntimeConfig = {
-    resendApiKey: process.env.RESEND_API_KEY || parseConfig.get('RESEND_API_KEY') || '',
-    resendFromEmail: process.env.RESEND_FROM_EMAIL || parseConfig.get('RESEND_FROM_EMAIL') || '',
-    resendReplyTo: process.env.RESEND_REPLY_TO || parseConfig.get('RESEND_REPLY_TO') || '',
-    twilioAccountSid: process.env.TWILIO_ACCOUNT_SID || parseConfig.get('TWILIO_ACCOUNT_SID') || '',
-    twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || parseConfig.get('TWILIO_AUTH_TOKEN') || '',
-    twilioApiKeySid: process.env.TWILIO_API_KEY_SID || parseConfig.get('TWILIO_API_KEY_SID') || '',
-    twilioApiKeySecret:
-      process.env.TWILIO_API_KEY_SECRET || parseConfig.get('TWILIO_API_KEY_SECRET') || '',
-    twilioFromNumber: process.env.TWILIO_FROM_NUMBER || parseConfig.get('TWILIO_FROM_NUMBER') || '',
+    resendApiKey: optionalString(process.env.RESEND_API_KEY || parseConfig.get('RESEND_API_KEY')),
+    resendFromEmail: optionalString(process.env.RESEND_FROM_EMAIL || parseConfig.get('RESEND_FROM_EMAIL')),
+    resendReplyTo: optionalString(process.env.RESEND_REPLY_TO || parseConfig.get('RESEND_REPLY_TO')),
+    twilioAccountSid: optionalString(process.env.TWILIO_ACCOUNT_SID || parseConfig.get('TWILIO_ACCOUNT_SID')),
+    twilioAuthToken: optionalString(process.env.TWILIO_AUTH_TOKEN || parseConfig.get('TWILIO_AUTH_TOKEN')),
+    twilioApiKeySid: optionalString(process.env.TWILIO_API_KEY_SID || parseConfig.get('TWILIO_API_KEY_SID')),
+    twilioApiKeySecret: optionalString(
+      process.env.TWILIO_API_KEY_SECRET || parseConfig.get('TWILIO_API_KEY_SECRET'),
+    ),
+    twilioFromNumber: optionalString(process.env.TWILIO_FROM_NUMBER || parseConfig.get('TWILIO_FROM_NUMBER')),
   }
 
   return cachedRuntimeConfig
