@@ -4,6 +4,7 @@ export type CustomerRecord = {
   address: string
   email: string
   phone: string
+  contactPreference: '' | 'email' | 'sms'
   reminderOptIn: boolean
   reminderMonths: number
   followUpWeeks: number
@@ -40,13 +41,14 @@ export type AppointmentRecord = {
   status: AppointmentStatus
   invoiceSentAt: string | null
   followUpSentAt: string | null
+  followUpCancelledAt: string | null
   createdAt: string
   updatedAt: string
 }
 
 export type AppointmentInput = Omit<
   AppointmentRecord,
-  'id' | 'createdAt' | 'updatedAt' | 'invoiceSentAt' | 'followUpSentAt'
+  'id' | 'createdAt' | 'updatedAt' | 'invoiceSentAt' | 'followUpSentAt' | 'followUpCancelledAt'
 > & {
   id?: string
 }
@@ -54,7 +56,9 @@ export type AppointmentInput = Omit<
 export type BusinessSettings = {
   id?: string
   businessName: string
+  websiteUrl: string
   venmoHandle: string
+  voicePhone: string
   defaultTaxRate: number
   defaultReminderMonths: number
   defaultFollowUpWeeks: number
@@ -63,9 +67,35 @@ export type BusinessSettings = {
   smsSignature: string
 }
 
+export type CommunicationKind =
+  | 'invoice'
+  | 'reminder'
+  | 'follow_up'
+  | 'marketing'
+  | 'appointment_confirmation'
+  | 'appointment_reminder'
+export type CommunicationChannel = 'email' | 'sms'
+
+export type CommunicationLogRecord = {
+  id: string
+  channel: CommunicationChannel
+  provider: string
+  kind: CommunicationKind
+  recipient: string
+  subject: string
+  body: string
+  customerId: string
+  appointmentId: string
+  providerMessageId: string
+  createdAt: string
+  updatedAt: string
+}
+
 export const defaultSettings: BusinessSettings = {
   businessName: 'Pitch Ledger Piano Tuning',
+  websiteUrl: 'https://www.primepianos.com',
   venmoHandle: '',
+  voicePhone: '(253) 900-9540',
   defaultTaxRate: 0.0825,
   defaultReminderMonths: 6,
   defaultFollowUpWeeks: 2,

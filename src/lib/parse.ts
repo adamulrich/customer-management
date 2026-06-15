@@ -1,4 +1,6 @@
 import {
+  type CommunicationLogRecord,
+  type CommunicationKind,
   defaultSettings,
   type AppointmentInput,
   type AppointmentRecord,
@@ -93,6 +95,7 @@ function toCustomerRecord(object: Parse.Object): CustomerRecord {
     address: object.get('address') ?? '',
     email: object.get('email') ?? '',
     phone: object.get('phone') ?? '',
+    contactPreference: object.get('contactPreference') ?? '',
     reminderOptIn: Boolean(object.get('reminderOptIn')),
     reminderMonths: Number(object.get('reminderMonths') ?? defaultSettings.defaultReminderMonths),
     followUpWeeks: Number(object.get('followUpWeeks') ?? defaultSettings.defaultFollowUpWeeks),
@@ -121,6 +124,7 @@ function toAppointmentRecord(object: Parse.Object): AppointmentRecord {
     status: object.get('status') ?? 'scheduled',
     invoiceSentAt: toIsoString(object.get('invoiceSentAt')),
     followUpSentAt: toIsoString(object.get('followUpSentAt')),
+    followUpCancelledAt: toIsoString(object.get('followUpCancelledAt')),
     createdAt: object.createdAt?.toISOString() ?? new Date().toISOString(),
     updatedAt: object.updatedAt?.toISOString() ?? new Date().toISOString(),
   }
@@ -130,7 +134,9 @@ function toSettingsRecord(object: Parse.Object): BusinessSettings {
   return {
     id: object.id,
     businessName: object.get('businessName') ?? defaultSettings.businessName,
+    websiteUrl: object.get('websiteUrl') ?? defaultSettings.websiteUrl,
     venmoHandle: object.get('venmoHandle') ?? '',
+    voicePhone: object.get('voicePhone') ?? defaultSettings.voicePhone,
     defaultTaxRate: Number(object.get('defaultTaxRate') ?? defaultSettings.defaultTaxRate),
     defaultReminderMonths: Number(
       object.get('defaultReminderMonths') ?? defaultSettings.defaultReminderMonths,
@@ -143,6 +149,23 @@ function toSettingsRecord(object: Parse.Object): BusinessSettings {
     ),
     emailSignature: object.get('emailSignature') ?? defaultSettings.emailSignature,
     smsSignature: object.get('smsSignature') ?? defaultSettings.smsSignature,
+  }
+}
+
+function toCommunicationLogRecord(object: Parse.Object): CommunicationLogRecord {
+  return {
+    id: object.id ?? '',
+    channel: object.get('channel') ?? 'email',
+    provider: object.get('provider') ?? '',
+    kind: object.get('kind') ?? 'invoice',
+    recipient: object.get('recipient') ?? '',
+    subject: object.get('subject') ?? '',
+    body: object.get('body') ?? '',
+    customerId: object.get('customerId') ?? '',
+    appointmentId: object.get('appointmentId') ?? '',
+    providerMessageId: object.get('providerMessageId') ?? '',
+    createdAt: object.createdAt?.toISOString() ?? new Date().toISOString(),
+    updatedAt: object.updatedAt?.toISOString() ?? new Date().toISOString(),
   }
 }
 
@@ -191,6 +214,7 @@ export async function saveCustomer(input: CustomerInput) {
   record.set('address', input.address.trim())
   record.set('email', input.email.trim())
   record.set('phone', input.phone.trim())
+  record.set('contactPreference', input.contactPreference || '')
   record.set('reminderOptIn', input.reminderOptIn)
   record.set('reminderMonths', input.reminderMonths)
   record.set('followUpWeeks', input.followUpWeeks)
@@ -224,6 +248,22 @@ export async function fetchAppointments() {
   try {
     const results = await query.find()
     return results.map(toAppointmentRecord)
+  } catch (error) {
+    if (isMissingClassError(error)) {
+      return []
+    }
+    throw error
+  }
+}
+
+export async function fetchCommunicationLogs() {
+  requireUser()
+  const query = new Parse.Query('CommunicationLog')
+  query.descending('createdAt')
+  query.limit(500)
+  try {
+    const results = await query.find()
+    return results.map(toCommunicationLogRecord)
   } catch (error) {
     if (isMissingClassError(error)) {
       return []
@@ -286,6 +326,14 @@ export async function markFollowUpSent(appointmentId: string) {
   return toAppointmentRecord(saved)
 }
 
+export async function cancelFollowUp(appointmentId: string) {
+  requireUser()
+  const appointment = await new Parse.Query('Appointment').get(appointmentId)
+  appointment.set('followUpCancelledAt', new Date())
+  const saved = await appointment.save()
+  return toAppointmentRecord(saved)
+}
+
 export async function markReminderSent(customerId: string) {
   requireUser()
   const customer = await new Parse.Query('Customer').get(customerId)
@@ -340,7 +388,9 @@ export async function saveSettings(input: BusinessSettings) {
   record.set('ownerId', user.id)
   record.set('ownerUsername', user.getUsername())
   record.set('businessName', input.businessName.trim())
+  record.set('websiteUrl', input.websiteUrl.trim())
   record.set('venmoHandle', input.venmoHandle.trim().replace(/^@/, ''))
+  record.set('voicePhone', input.voicePhone.trim())
   record.set('defaultTaxRate', input.defaultTaxRate)
   record.set('defaultReminderMonths', input.defaultReminderMonths)
   record.set('defaultFollowUpWeeks', input.defaultFollowUpWeeks)
@@ -359,7 +409,7 @@ type EmailPayload = {
   html?: string
   customerId?: string
   appointmentId?: string
-  kind: 'invoice' | 'reminder' | 'follow_up' | 'marketing'
+  kind: CommunicationKind
 }
 
 type SmsPayload = {
@@ -367,7 +417,7 @@ type SmsPayload = {
   body: string
   customerId?: string
   appointmentId?: string
-  kind: 'invoice' | 'reminder' | 'follow_up'
+  kind: Exclude<CommunicationKind, 'marketing'>
 }
 
 type MarketingPayload = {

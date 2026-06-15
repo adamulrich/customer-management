@@ -19,14 +19,17 @@ import {
   startOfQuarter,
   startOfWeek,
   startOfYear,
+  subDays,
   subMonths,
   subQuarters,
 } from 'date-fns'
 import './App.css'
 import {
+  cancelFollowUp,
   deleteAppointment,
   deleteCustomer,
   fetchAppointments,
+  fetchCommunicationLogs,
   fetchCustomers,
   fetchSettings,
   getCurrentUser,
@@ -46,6 +49,9 @@ import {
   sendMarketingBlast,
 } from './lib/parse'
 import {
+  type CommunicationLogRecord,
+  type CommunicationKind,
+  type CommunicationChannel,
   defaultSettings,
   type AppointmentInput,
   type AppointmentRecord,
@@ -61,20 +67,61 @@ const navigation = [
   ['reports', 'Sales Reports'],
   ['appointments', 'Appointments'],
   ['history', 'Service History'],
-  ['workflows', 'Workflows'],
+  ['invoices', 'Invoicing'],
+  ['followups', 'Follow-ups'],
+  ['communications', 'Communication Log'],
   ['settings', 'Settings'],
 ] as const
+
+type TabKey = (typeof navigation)[number][0]
+type LegacyTabKey = TabKey | 'workflows'
+
+type DetailOrigin = {
+  label: string
+  tab: TabKey
+}
+
+const defaultCustomerDetailOrigin: DetailOrigin = {
+  label: 'directory',
+  tab: 'customers',
+}
+
+const defaultAppointmentDetailOrigin: DetailOrigin = {
+  label: 'calendar',
+  tab: 'appointments',
+}
+
+function detailOrigin(tab: TabKey, label?: string): DetailOrigin {
+  const navLabel = navigation.find(([key]) => key === tab)?.[1].toLowerCase() ?? tab
+  return {
+    label: label ?? navLabel,
+    tab,
+  }
+}
 
 const GOOGLE_REVIEW_LINK = 'https://g.page/r/CUfNAU9Ogl_-EAE/review'
 const STANDARD_APPOINTMENT_TOTAL = 150
 const TRAVEL_TOTAL_UPCHARGE = 25
-const PITCH_CHANGE_TOTAL_UPCHARGE = 25
+const PITCH_RAISE_TOTAL_UPCHARGE = 25
+const REPAIR_AMOUNT_OPTIONS = Array.from({ length: 61 }, (_, index) => index * 5)
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+      <path
+        d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v8h-2V9zm4 0h2v8h-2V9zM7 9h2v8H7V9zm1 12a2 2 0 0 1-2-2V8h12v11a2 2 0 0 1-2 2H8z"
+        fill="currentColor"
+      />
+    </svg>
+  )
+}
 
 const emptyCustomerForm = (settings: BusinessSettings): CustomerInput => ({
   name: '',
   address: '',
   email: '',
   phone: '',
+  contactPreference: '',
   reminderOptIn: true,
   reminderMonths: settings.defaultReminderMonths,
   followUpWeeks: settings.defaultFollowUpWeeks,
@@ -126,16 +173,23 @@ function roundMoney(value: number) {
   return Number(value.toFixed(2))
 }
 
+function normalizeUrl(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+}
+
 function calculateIncludedTaxBreakdown(
   total: number,
   taxRate: number,
-  travelIncluded: boolean,
-  pitchChangeIncluded: boolean,
+  travelCharge: number,
+  additionalCharges: number,
 ) {
   const safeRate = Number.isFinite(taxRate) ? Math.max(taxRate, 0) : 0
   const divisor = 1 + safeRate
-  const travelCharge = travelIncluded ? TRAVEL_TOTAL_UPCHARGE : 0
-  const additionalCharges = pitchChangeIncluded ? PITCH_CHANGE_TOTAL_UPCHARGE : 0
   const quotedEstimate = roundMoney(total / divisor - travelCharge - additionalCharges)
   const subtotal = roundMoney(quotedEstimate + travelCharge + additionalCharges)
   const taxAmount = roundMoney(total - subtotal)
@@ -147,6 +201,71 @@ function calculateIncludedTaxBreakdown(
     taxAmount,
     total: roundMoney(total),
   }
+}
+
+function buildAdditionalChargeNote(pitchRaiseIncluded: boolean, repairsAmount: number) {
+  const parts: string[] = []
+  if (pitchRaiseIncluded) {
+    parts.push('Pitch raise')
+  }
+  if (repairsAmount > 0) {
+    parts.push('Repairs')
+  }
+  return parts.join(' + ')
+}
+
+function additionalChargeBreakdown(additionalCharges: number, additionalChargeNote: string) {
+  const total = roundMoney(Number(additionalCharges || 0))
+  const normalizedNote = additionalChargeNote.trim().toLowerCase()
+  const hasPitchRaise =
+    normalizedNote.includes('pitch raise') || normalizedNote.includes('pitch change')
+  const hasRepairs = normalizedNote.includes('repair')
+  const pitchRaiseCharge = hasPitchRaise ? Math.min(PITCH_RAISE_TOTAL_UPCHARGE, total) : 0
+  const remainder = roundMoney(Math.max(total - pitchRaiseCharge, 0))
+  const repairsCharge = hasRepairs ? remainder : 0
+  const genericAdditionalCharges =
+    hasRepairs ? 0
+    : hasPitchRaise ? remainder
+    : total
+
+  return {
+    pitchRaiseCharge,
+    repairsCharge,
+    genericAdditionalCharges,
+  }
+}
+
+function appointmentChargeDetails(appointment: AppointmentRecord | AppointmentInput) {
+  const breakdown = additionalChargeBreakdown(
+    appointment.additionalCharges,
+    appointment.additionalChargeNote,
+  )
+  const generatedNote = buildAdditionalChargeNote(
+    breakdown.pitchRaiseCharge > 0,
+    breakdown.repairsCharge,
+  )
+  const showCustomNote =
+    appointment.additionalChargeNote.trim().length > 0 &&
+    appointment.additionalChargeNote.trim() !== generatedNote
+
+  return [
+    { label: 'Quoted estimate', value: currency(appointment.quotedEstimate) },
+    { label: 'Travel charge', value: currency(appointment.travelCharge) },
+    ...(breakdown.pitchRaiseCharge > 0
+      ? [{ label: 'Pitch raise', value: currency(breakdown.pitchRaiseCharge) }]
+      : []),
+    ...(breakdown.repairsCharge > 0
+      ? [{ label: 'Repairs', value: currency(breakdown.repairsCharge) }]
+      : []),
+    ...(breakdown.genericAdditionalCharges > 0
+      ? [{ label: 'Additional charges', value: currency(breakdown.genericAdditionalCharges) }]
+      : []),
+    ...(showCustomNote
+      ? [{ label: 'Additional charge note', value: appointment.additionalChargeNote }]
+      : []),
+    { label: 'Tax', value: currency(appointment.taxAmount) },
+    { label: 'Total', value: currency(totalForAppointment(appointment)) },
+  ]
 }
 
 function fullDate(value: string) {
@@ -172,6 +291,66 @@ function paymentMethodLabel(value: PaymentMethod) {
     default:
       return 'Not recorded'
   }
+}
+
+function communicationKindLabel(value: CommunicationLogRecord['kind']) {
+  switch (value) {
+    case 'appointment_confirmation':
+      return 'Appointment confirmation'
+    case 'appointment_reminder':
+      return 'Appointment reminder'
+    case 'follow_up':
+      return 'Follow-up'
+    case 'marketing':
+      return 'Marketing'
+    case 'reminder':
+      return 'Reminder'
+    case 'invoice':
+    default:
+      return 'Invoice'
+  }
+}
+
+function communicationChannelLabel(value: CommunicationLogRecord['channel']) {
+  return value === 'sms' ? 'Text' : 'Email'
+}
+
+function contactPreferenceLabel(value: CustomerRecord['contactPreference']) {
+  switch (value) {
+    case 'email':
+      return 'Email'
+    case 'sms':
+      return 'Text'
+    default:
+      return 'No preference'
+  }
+}
+
+function communicationPreview(value: string) {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function customerAllowedChannels(customer: CustomerRecord): CommunicationChannel[] {
+  if (customer.contactPreference === 'email') {
+    return customer.email ? ['email'] : []
+  }
+
+  if (customer.contactPreference === 'sms') {
+    return customer.phone ? ['sms'] : []
+  }
+
+  const channels: CommunicationChannel[] = []
+  if (customer.email) {
+    channels.push('email')
+  }
+  if (customer.phone) {
+    channels.push('sms')
+  }
+  return channels
+}
+
+function customerCanUseChannel(customer: CustomerRecord, channel: CommunicationChannel) {
+  return customerAllowedChannels(customer).includes(channel)
 }
 
 function calendarEventClass(status: AppointmentStatus) {
@@ -256,9 +435,10 @@ function StatCard({
 
 type MessageComposerState = {
   appointmentId?: string
-  channel: 'email' | 'sms'
+  channel: CommunicationChannel
   customerId?: string
-  kind: 'invoice' | 'reminder' | 'follow_up' | 'marketing'
+  headerDetails?: Array<{ label: string; value: string }>
+  kind: CommunicationKind
   message: string
   recipient: string
   statusMessage: string
@@ -266,7 +446,28 @@ type MessageComposerState = {
   title: string
 }
 
+type AppointmentChannelPromptState = {
+  appointment: AppointmentRecord
+  customer: CustomerRecord
+  kind: 'appointment_confirmation'
+}
+
 type ReportPeriod = 'week' | 'month' | 'quarter' | 'year' | 'all'
+
+type MarkPaidState = {
+  appointmentId: string
+  paymentMethod: PaymentMethod
+}
+
+type ConfirmDialogState =
+  | {
+      title: string
+      message: string
+      action:
+        | { type: 'delete_customer'; customerId: string }
+        | { type: 'delete_appointment'; appointmentId: string }
+        | { type: 'cancel_followup'; appointmentId: string }
+    }
 
 function App() {
   const appVersion = __APP_VERSION__
@@ -275,41 +476,58 @@ function App() {
   const [user, setUser] = useState(() => getCurrentUser())
   const [customers, setCustomers] = useState<CustomerRecord[]>([])
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([])
+  const [communicationLogs, setCommunicationLogs] = useState<CommunicationLogRecord[]>([])
   const [settings, setSettings] = useState<BusinessSettings>(defaultSettings)
   const [customerForm, setCustomerForm] = useState<CustomerInput>(emptyCustomerForm(defaultSettings))
   const [appointmentForm, setAppointmentForm] = useState<AppointmentInput>(emptyAppointmentForm())
-  const [activeTab, setActiveTab] =
-    useState<(typeof navigation)[number][0]>('customers')
+  const [activeTab, setActiveTab] = useState<LegacyTabKey>('customers')
   const [selectedCustomerId, setSelectedCustomerId] = useState('')
   const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()))
   const [isCustomerFormOpen, setIsCustomerFormOpen] = useState(false)
   const [isAppointmentFormOpen, setIsAppointmentFormOpen] = useState(false)
   const [isAppointmentEditing, setIsAppointmentEditing] = useState(false)
   const [selectedAppointmentId, setSelectedAppointmentId] = useState('')
+  const [customerDetailOrigin, setCustomerDetailOrigin] = useState<DetailOrigin>(
+    defaultCustomerDetailOrigin,
+  )
+  const [appointmentDetailOrigin, setAppointmentDetailOrigin] = useState<DetailOrigin>(
+    defaultAppointmentDetailOrigin,
+  )
   const [loginForm, setLoginForm] = useState({ username: '', password: '' })
   const [filters, setFilters] = useState({
     customerSearch: '',
     serviceHistorySearch: '',
+    communicationSearch: '',
     serviceWindowMonths: defaultSettings.marketingExcludeMonths,
   })
   const [loading, setLoading] = useState(false)
   const [statusText, setStatusText] = useState('Ready.')
   const [errorText, setErrorText] = useState('')
   const [messageComposer, setMessageComposer] = useState<MessageComposerState | null>(null)
+  const [appointmentChannelPrompt, setAppointmentChannelPrompt] =
+    useState<AppointmentChannelPromptState | null>(null)
+  const [markPaidState, setMarkPaidState] = useState<MarkPaidState | null>(null)
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null)
   const [appointmentPricingOptions, setAppointmentPricingOptions] = useState({
     travelIncluded: false,
-    pitchChangeIncluded: false,
+    pitchRaiseIncluded: false,
+    repairsAmount: 0,
   })
+  const repairAmountOptions = Array.from(
+    new Set([...REPAIR_AMOUNT_OPTIONS, appointmentPricingOptions.repairsAmount]),
+  ).sort((left, right) => left - right)
 
   const refreshData = useEffectEvent(async () => {
-    const [nextCustomers, nextAppointments, nextSettings] = await Promise.all([
+    const [nextCustomers, nextAppointments, nextCommunicationLogs, nextSettings] = await Promise.all([
       fetchCustomers(),
       fetchAppointments(),
+      fetchCommunicationLogs(),
       fetchSettings(),
     ])
 
     setCustomers(nextCustomers)
     setAppointments(nextAppointments)
+    setCommunicationLogs(nextCommunicationLogs)
     setSettings(nextSettings)
     setCustomerForm((current) =>
       current.id ? current : emptyCustomerForm(nextSettings),
@@ -368,7 +586,11 @@ function App() {
 
   const followUpQueue = appointments
     .map((appointment) => {
-      if (appointment.status === 'scheduled' || appointment.followUpSentAt) {
+      if (
+        appointment.status === 'scheduled' ||
+        appointment.followUpSentAt ||
+        appointment.followUpCancelledAt
+      ) {
         return null
       }
 
@@ -392,6 +614,35 @@ function App() {
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
     .filter((item) => item.isDue)
     .sort((left, right) => left.dueDate.getTime() - right.dueDate.getTime())
+
+  const upcomingAppointmentQueue = appointments
+    .filter((appointment) => appointment.status === 'scheduled')
+    .map((appointment) => {
+      const customer = customerMap.get(appointment.customerId)
+      if (!customer) {
+        return null
+      }
+
+      const appointmentDate = parseISO(appointment.appointmentDate)
+      return {
+        appointment,
+        customer,
+        isUpcoming: !isBefore(appointmentDate, new Date()) && !isAfter(appointmentDate, addDays(new Date(), 7)),
+      }
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .filter((item) => item.isUpcoming)
+    .sort((left, right) => left.appointment.appointmentDate.localeCompare(right.appointment.appointmentDate))
+
+  const latestAppointmentReminderByAppointmentId = communicationLogs
+    .filter((item) => item.kind === 'appointment_reminder' && item.appointmentId)
+    .reduce<Map<string, CommunicationLogRecord>>((map, item) => {
+      const existing = map.get(item.appointmentId)
+      if (!existing || existing.createdAt < item.createdAt) {
+        map.set(item.appointmentId, item)
+      }
+      return map
+    }, new Map())
 
   const marketingTargets = customers
     .filter((customer) => customer.marketingOptIn)
@@ -435,9 +686,32 @@ function App() {
   }, [isCustomerDirectoryView])
 
   const quarterSummary = quartersFromAppointments(appointments)
-  const outstandingInvoices = appointments.filter(
+  const invoiceReadyAppointments = appointments.filter(
+    (appointment) => appointment.status !== 'scheduled',
+  )
+  const invoiceQueueAppointments = invoiceReadyAppointments
+  const outstandingInvoices = invoiceReadyAppointments.filter(
     (appointment) => appointment.status !== 'paid',
   )
+  const uninvoicedAppointments = invoiceReadyAppointments
+    .filter((appointment) => !appointment.invoiceSentAt && appointment.status !== 'paid')
+    .sort((left, right) => left.appointmentDate.localeCompare(right.appointmentDate))
+  const unpaidAppointments = invoiceReadyAppointments
+    .filter(
+      (appointment) =>
+        appointment.status !== 'paid' &&
+        Boolean(appointment.invoiceSentAt || appointment.status === 'invoiced'),
+    )
+    .sort((left, right) => left.appointmentDate.localeCompare(right.appointmentDate))
+  const recentlyPaidAppointments = appointments
+    .filter((appointment) => {
+      if (appointment.status !== 'paid') {
+        return false
+      }
+
+      return !isBefore(parseISO(appointment.updatedAt), subDays(new Date(), 14))
+    })
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
   const completedAppointments = appointments.filter(
     (appointment) => appointment.status !== 'scheduled',
   )
@@ -459,6 +733,122 @@ function App() {
       currency(totalForAppointment(appointment)),
     ].some((field) => field.toLowerCase().includes(query))
   })
+  const filteredCommunicationLogs = communicationLogs.filter((item) => {
+    const query = filters.communicationSearch.trim().toLowerCase()
+    if (!query) {
+      return true
+    }
+
+    const customerName = customerMap.get(item.customerId)?.name ?? ''
+    const appointment = appointments.find((candidate) => candidate.id === item.appointmentId)
+
+    return [
+      customerName,
+      item.recipient,
+      item.subject,
+      item.body,
+      communicationKindLabel(item.kind),
+      communicationChannelLabel(item.channel),
+      item.provider,
+      appointment?.customerName ?? '',
+      item.createdAt ? fullDate(item.createdAt) : '',
+    ].some((field) => field.toLowerCase().includes(query))
+  })
+
+  function renderInvoiceQueue(
+    list: AppointmentRecord[],
+    emptyText: string,
+    metaText: (appointment: AppointmentRecord) => string,
+    options?: {
+      showCommunicationActions?: boolean
+    },
+  ) {
+    const showCommunicationActions = options?.showCommunicationActions ?? true
+
+    return (
+      <div className="queue-list">
+        {list.map((appointment) => {
+          const customer = customerMap.get(appointment.customerId)
+          if (!customer) {
+            return null
+          }
+
+          return (
+            <div key={appointment.id} className="queue-card invoice-queue-card">
+              <div>
+                <button
+                  type="button"
+                  className="inline-link-button workflow-name-link"
+                  onClick={() => openCustomerDetails(customer.id, detailOrigin('invoices', 'invoicing'))}
+                >
+                  {appointment.customerName}
+                </button>
+                <span>{currency(totalForAppointment(appointment))}</span>
+                <span>{metaText(appointment)}</span>
+              </div>
+              <div className="workflow-action-stack">
+                {showCommunicationActions ? (
+                  <div className="workflow-action-row workflow-action-row-primary">
+                    {customerCanUseChannel(customer, 'email') ? (
+                      <button
+                        className="secondary-button"
+                        onClick={() => openInvoiceComposer('email', customer, appointment)}
+                      >
+                        Email
+                      </button>
+                    ) : null}
+                    {customerCanUseChannel(customer, 'sms') ? (
+                      <button
+                        className="secondary-button"
+                        onClick={() => openInvoiceComposer('sms', customer, appointment)}
+                      >
+                        Text
+                      </button>
+                    ) : null}
+                    <button
+                      className="secondary-button"
+                      onClick={() =>
+                        copyText(invoiceText(appointment), 'Invoice text copied to clipboard.')
+                      }
+                    >
+                      Copy
+                    </button>
+                  </div>
+                ) : null}
+                <div className="workflow-action-row workflow-action-row-secondary">
+                  <button
+                    className="secondary-button"
+                    onClick={() =>
+                      openAppointmentDetails(appointment, detailOrigin('invoices', 'invoicing'))
+                    }
+                  >
+                    Appointment
+                  </button>
+                  {appointment.status !== 'paid' ? (
+                    <button
+                      className="secondary-button"
+                      onClick={() => openMarkPaidModal(appointment)}
+                    >
+                      Mark paid
+                    </button>
+                  ) : (
+                    <span className="paid-badge" aria-label="Appointment paid">
+                      <span className="paid-badge-check" aria-hidden="true">
+                        ✓
+                      </span>
+                      <span>Paid</span>
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+        {list.length === 0 ? <p className="empty-state">{emptyText}</p> : null}
+      </div>
+    )
+  }
+
   const reportRange = (() => {
     const now = new Date()
     switch (reportPeriod) {
@@ -580,6 +970,150 @@ function App() {
     setMessageComposer(input)
   }
 
+  function openCustomerDetails(
+    customerId: string,
+    origin: DetailOrigin = defaultCustomerDetailOrigin,
+  ) {
+    setFilters((current) => ({ ...current, customerSearch: '' }))
+    setIsCustomerFormOpen(false)
+    setCustomerDetailOrigin(origin)
+    setSelectedCustomerId(customerId)
+    setActiveTab('customers')
+  }
+
+  function closeCustomerDetails() {
+    setSelectedCustomerId('')
+    setActiveTab(customerDetailOrigin.tab)
+    setCustomerDetailOrigin(defaultCustomerDetailOrigin)
+  }
+
+  function openCustomerDetailsFromWorkflow(customerId: string) {
+    openCustomerDetails(customerId, detailOrigin('followups', 'follow-ups'))
+  }
+
+  function openMarkPaidModal(appointment: AppointmentRecord) {
+    setErrorText('')
+    setMarkPaidState({
+      appointmentId: appointment.id,
+      paymentMethod: appointment.paymentMethod || 'cash',
+    })
+  }
+
+  function openInvoiceComposer(channel: CommunicationChannel, customer: CustomerRecord, appointment: AppointmentRecord) {
+    openMessageComposer({
+      channel,
+      customerId: customer.id,
+      appointmentId: appointment.id,
+      headerDetails: invoiceComposerDetails(customer, appointment),
+      kind: 'invoice',
+      recipient: channel === 'email' ? customer.email : customer.phone,
+      subject: `Invoice from ${settings.businessName}`,
+      message: channel === 'email' ? invoiceEmailText(appointment) : invoiceText(appointment),
+      title: channel === 'email' ? 'Invoice' : 'Invoice text',
+      statusMessage: `Invoice ${channel === 'email' ? 'email' : 'text'} sent to ${customer.name}.`,
+    })
+  }
+
+  function openRecurringReminderComposer(
+    channel: CommunicationChannel,
+    customer: CustomerRecord,
+    appointment: AppointmentRecord,
+  ) {
+    openMessageComposer({
+      channel,
+      customerId: customer.id,
+      appointmentId: appointment.id,
+      kind: 'reminder',
+      recipient: channel === 'email' ? customer.email : customer.phone,
+      subject: 'Time to schedule your next piano tuning',
+      message: reminderText(customer, appointment),
+      title: channel === 'email' ? 'Time for your next tuning' : 'Reminder text',
+      statusMessage: `Reminder ${channel === 'email' ? 'email' : 'text'} sent to ${customer.name}.`,
+    })
+  }
+
+  function openFollowUpComposer(
+    channel: CommunicationChannel,
+    customer: CustomerRecord,
+    appointment: AppointmentRecord,
+  ) {
+    openMessageComposer({
+      channel,
+      customerId: customer.id,
+      appointmentId: appointment.id,
+      kind: 'follow_up',
+      recipient: channel === 'email' ? customer.email : customer.phone,
+      subject: 'Checking in on your piano',
+      message: followUpText(customer, appointment),
+      title: channel === 'email' ? 'Checking in after your tuning' : 'Follow-up text',
+      statusMessage: `Follow-up ${channel === 'email' ? 'email' : 'text'} sent to ${customer.name}.`,
+    })
+  }
+
+  function openAppointmentConfirmationComposer(
+    channel: CommunicationChannel,
+    customer: CustomerRecord,
+    appointment: AppointmentRecord,
+  ) {
+    openMessageComposer({
+      channel,
+      customerId: customer.id,
+      appointmentId: appointment.id,
+      headerDetails: appointmentCommunicationDetails(customer, appointment),
+      kind: 'appointment_confirmation',
+      recipient: channel === 'email' ? customer.email : customer.phone,
+      subject: `Appointment confirmation from ${settings.businessName}`,
+      message:
+        channel === 'email'
+          ? appointmentConfirmationText(customer)
+          : appointmentConfirmationSms(customer, appointment),
+      title: channel === 'email' ? 'Appointment confirmation' : 'Confirmation text',
+      statusMessage: `Appointment confirmation ${channel === 'email' ? 'email' : 'text'} sent to ${customer.name}.`,
+    })
+  }
+
+  function openUpcomingAppointmentReminderComposer(
+    channel: CommunicationChannel,
+    customer: CustomerRecord,
+    appointment: AppointmentRecord,
+  ) {
+    openMessageComposer({
+      channel,
+      customerId: customer.id,
+      appointmentId: appointment.id,
+      headerDetails: appointmentCommunicationDetails(customer, appointment),
+      kind: 'appointment_reminder',
+      recipient: channel === 'email' ? customer.email : customer.phone,
+      subject: `Appointment reminder from ${settings.businessName}`,
+      message:
+        channel === 'email'
+          ? appointmentReminderText(customer)
+          : appointmentReminderSms(customer, appointment),
+      title: channel === 'email' ? 'Appointment reminder' : 'Reminder text',
+      statusMessage: `Appointment reminder ${channel === 'email' ? 'email' : 'text'} sent to ${customer.name}.`,
+    })
+  }
+
+  function promptAppointmentConfirmation(customer: CustomerRecord, appointment: AppointmentRecord) {
+    const channels = customerAllowedChannels(customer)
+
+    if (channels.length === 0) {
+      setStatusText(`Saved appointment for ${customer.name}.`)
+      return
+    }
+
+    if (channels.length === 1) {
+      openAppointmentConfirmationComposer(channels[0], customer, appointment)
+      return
+    }
+
+    setAppointmentChannelPrompt({
+      appointment,
+      customer,
+      kind: 'appointment_confirmation',
+    })
+  }
+
   async function handleComposerSend() {
     if (!messageComposer) {
       return
@@ -603,6 +1137,30 @@ function App() {
 
           if (messageComposer.kind === 'invoice' && composerAppointment) {
             html = invoiceHtml(composerAppointment, messageComposer.message)
+          }
+
+          if (
+            messageComposer.kind === 'appointment_confirmation' &&
+            composerCustomer &&
+            composerAppointment
+          ) {
+            html = appointmentConfirmationHtml(
+              composerCustomer,
+              composerAppointment,
+              messageComposer.message,
+            )
+          }
+
+          if (
+            messageComposer.kind === 'appointment_reminder' &&
+            composerCustomer &&
+            composerAppointment
+          ) {
+            html = appointmentReminderHtml(
+              composerCustomer,
+              composerAppointment,
+              messageComposer.message,
+            )
           }
 
           if (messageComposer.kind === 'reminder' && composerCustomer && composerAppointment) {
@@ -682,6 +1240,62 @@ function App() {
     }
   }
 
+  async function handleMarkPaid() {
+    if (!markPaidState) {
+      return
+    }
+
+    const appointment = appointments.find((item) => item.id === markPaidState.appointmentId)
+    if (!appointment) {
+      setErrorText('That appointment could not be found.')
+      return
+    }
+
+    if (!markPaidState.paymentMethod) {
+      setErrorText('Choose a payment method before marking the appointment paid.')
+      return
+    }
+
+    const saved = await runTask('Marking appointment paid…', () =>
+      saveAppointment({
+        id: appointment.id,
+        customerId: appointment.customerId,
+        customerName: appointment.customerName,
+        appointmentDate: appointment.appointmentDate.slice(0, 16),
+        quotedEstimate: appointment.quotedEstimate,
+        travelCharge: appointment.travelCharge,
+        additionalCharges: appointment.additionalCharges,
+        additionalChargeNote: appointment.additionalChargeNote,
+        taxAmount: appointment.taxAmount,
+        paymentMethod: markPaidState.paymentMethod,
+        notes: appointment.notes,
+        status: 'paid',
+      }),
+    )
+
+    if (saved) {
+      await refreshData()
+      setMarkPaidState(null)
+      setStatusText(`Marked ${appointment.customerName}'s appointment as paid.`)
+    }
+  }
+
+  async function handleCancelFollowUp(appointment: AppointmentRecord) {
+    const confirmed = globalThis.confirm(
+      `Remove the follow-up reminder for ${appointment.customerName} on ${shortDate(appointment.appointmentDate)}?`,
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    const saved = await runTask('Cancelling follow-up…', () => cancelFollowUp(appointment.id))
+    if (saved) {
+      await refreshData()
+      setStatusText(`Cancelled the follow-up reminder for ${appointment.customerName}.`)
+    }
+  }
+
   async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
@@ -724,6 +1338,7 @@ function App() {
       setErrorText('Choose a customer before saving the appointment.')
       return
     }
+    const isNewAppointment = !appointmentForm.id
 
     const payload: AppointmentInput = {
       ...appointmentForm,
@@ -751,7 +1366,11 @@ function App() {
       setIsAppointmentFormOpen(true)
       setIsAppointmentEditing(false)
       setSelectedCustomerId(selected.id)
-      setStatusText(`Saved appointment for ${selected.name}.`)
+      if (isNewAppointment) {
+        promptAppointmentConfirmation(selected, saved)
+      } else {
+        setStatusText(`Saved appointment for ${selected.name}.`)
+      }
     }
   }
 
@@ -792,6 +1411,90 @@ function App() {
     }
   }
 
+  void handleCancelFollowUp
+  void handleDeleteCustomer
+  void handleDeleteAppointment
+
+  function queueDeleteCustomerConfirmation(customerId: string) {
+    const target = customerMap.get(customerId)
+    if (!target) {
+      return
+    }
+
+    setConfirmDialog({
+      title: 'Delete customer',
+      message: `Delete ${target.name} and all linked appointments?`,
+      action: { type: 'delete_customer', customerId },
+    })
+  }
+
+  function queueDeleteAppointmentConfirmation(appointmentId: string) {
+    setConfirmDialog({
+      title: 'Delete appointment',
+      message: 'Delete this appointment?',
+      action: { type: 'delete_appointment', appointmentId },
+    })
+  }
+
+  function queueCancelFollowUpConfirmation(appointment: AppointmentRecord) {
+    setConfirmDialog({
+      title: 'Cancel follow-up reminder',
+      message: `Remove the follow-up reminder for ${appointment.customerName} on ${shortDate(appointment.appointmentDate)}?`,
+      action: { type: 'cancel_followup', appointmentId: appointment.id },
+    })
+  }
+
+  async function handleConfirmDialogYes() {
+    if (!confirmDialog) {
+      return
+    }
+
+    const action = confirmDialog.action
+    setConfirmDialog(null)
+
+    if (action.type === 'delete_customer') {
+      const target = customerMap.get(action.customerId)
+      if (!target) {
+        return
+      }
+
+      const removed = await runTask('Deleting customerâ€¦', () => deleteCustomer(action.customerId))
+      if (removed !== null) {
+        await refreshData()
+        setSelectedCustomerId('')
+        setStatusText(`Deleted ${target.name}.`)
+      }
+      return
+    }
+
+    if (action.type === 'delete_appointment') {
+      const removed = await runTask('Deleting appointmentâ€¦', () =>
+        deleteAppointment(action.appointmentId),
+      )
+      if (removed !== null) {
+        await refreshData()
+        if (selectedAppointmentId === action.appointmentId) {
+          setSelectedAppointmentId('')
+          setIsAppointmentFormOpen(false)
+          setIsAppointmentEditing(false)
+        }
+        setStatusText('Appointment deleted.')
+      }
+      return
+    }
+
+    const appointment = appointments.find((item) => item.id === action.appointmentId)
+    if (!appointment) {
+      return
+    }
+
+    const saved = await runTask('Cancelling follow-upâ€¦', () => cancelFollowUp(appointment.id))
+    if (saved) {
+      await refreshData()
+      setStatusText(`Cancelled the follow-up reminder for ${appointment.customerName}.`)
+    }
+  }
+
   function editCustomer(customer: CustomerRecord) {
     setCustomerForm({
       id: customer.id,
@@ -799,6 +1502,7 @@ function App() {
       address: customer.address,
       email: customer.email,
       phone: customer.phone,
+      contactPreference: customer.contactPreference,
       reminderOptIn: customer.reminderOptIn,
       reminderMonths: customer.reminderMonths,
       followUpWeeks: customer.followUpWeeks,
@@ -826,12 +1530,27 @@ function App() {
     })
     setAppointmentPricingOptions({
       travelIncluded: appointment.travelCharge > 0,
-      pitchChangeIncluded: appointment.additionalCharges > 0,
+      pitchRaiseIncluded:
+        additionalChargeBreakdown(
+          appointment.additionalCharges,
+          appointment.additionalChargeNote,
+        ).pitchRaiseCharge > 0,
+      repairsAmount: (() => {
+        const breakdown = additionalChargeBreakdown(
+          appointment.additionalCharges,
+          appointment.additionalChargeNote,
+        )
+        return breakdown.repairsCharge || breakdown.genericAdditionalCharges
+      })(),
     })
   }
 
-  function openAppointmentDetails(appointment: AppointmentRecord) {
+  function openAppointmentDetails(
+    appointment: AppointmentRecord,
+    origin: DetailOrigin = defaultAppointmentDetailOrigin,
+  ) {
     loadAppointmentIntoForm(appointment)
+    setAppointmentDetailOrigin(origin)
     setSelectedAppointmentId(appointment.id)
     setIsAppointmentFormOpen(true)
     setIsAppointmentEditing(false)
@@ -839,8 +1558,12 @@ function App() {
     setActiveTab('appointments')
   }
 
-  function beginAppointmentEdit(appointment: AppointmentRecord) {
+  function beginAppointmentEdit(
+    appointment: AppointmentRecord,
+    origin: DetailOrigin = appointmentDetailOrigin,
+  ) {
     loadAppointmentIntoForm(appointment)
+    setAppointmentDetailOrigin(origin)
     setSelectedAppointmentId(appointment.id)
     setIsAppointmentFormOpen(true)
     setIsAppointmentEditing(true)
@@ -867,14 +1590,24 @@ function App() {
     })
     setAppointmentPricingOptions({
       travelIncluded: false,
-      pitchChangeIncluded: false,
+      pitchRaiseIncluded: false,
+      repairsAmount: 0,
     })
     setIsAppointmentFormOpen(false)
     setIsAppointmentEditing(false)
     setSelectedAppointmentId('')
   }
 
-  function startNewAppointment(customer?: CustomerRecord | null) {
+  function closeAppointmentDetails() {
+    resetAppointmentForm()
+    setActiveTab(appointmentDetailOrigin.tab)
+    setAppointmentDetailOrigin(defaultAppointmentDetailOrigin)
+  }
+
+  function startNewAppointment(
+    customer?: CustomerRecord | null,
+    origin: DetailOrigin = defaultAppointmentDetailOrigin,
+  ) {
     setAppointmentForm({
       ...emptyAppointmentForm(),
       customerId: customer?.id ?? '',
@@ -882,8 +1615,10 @@ function App() {
     })
     setAppointmentPricingOptions({
       travelIncluded: false,
-      pitchChangeIncluded: false,
+      pitchRaiseIncluded: false,
+      repairsAmount: 0,
     })
+    setAppointmentDetailOrigin(origin)
     setSelectedCustomerId(customer?.id ?? '')
     setSelectedAppointmentId('')
     setIsAppointmentFormOpen(true)
@@ -891,16 +1626,31 @@ function App() {
     setActiveTab('appointments')
   }
 
+  function cancelAppointmentEditing() {
+    if (selectedAppointmentId) {
+      setIsAppointmentEditing(false)
+      return
+    }
+
+    closeAppointmentDetails()
+  }
+
   function applyFlatFeePricing() {
+    const travelCharge = appointmentPricingOptions.travelIncluded ? TRAVEL_TOTAL_UPCHARGE : 0
+    const pitchRaiseCharge = appointmentPricingOptions.pitchRaiseIncluded
+      ? PITCH_RAISE_TOTAL_UPCHARGE
+      : 0
+    const repairsCharge = appointmentPricingOptions.repairsAmount
+    const additionalCharges = pitchRaiseCharge + repairsCharge
     const total =
       STANDARD_APPOINTMENT_TOTAL +
-      (appointmentPricingOptions.travelIncluded ? TRAVEL_TOTAL_UPCHARGE : 0) +
-      (appointmentPricingOptions.pitchChangeIncluded ? PITCH_CHANGE_TOTAL_UPCHARGE : 0)
+      travelCharge +
+      additionalCharges
     const breakdown = calculateIncludedTaxBreakdown(
       total,
       settings.defaultTaxRate,
-      appointmentPricingOptions.travelIncluded,
-      appointmentPricingOptions.pitchChangeIncluded,
+      travelCharge,
+      additionalCharges,
     )
 
     setAppointmentForm((current) => ({
@@ -908,11 +1658,10 @@ function App() {
       quotedEstimate: breakdown.quotedEstimate,
       travelCharge: breakdown.travelCharge,
       additionalCharges: breakdown.additionalCharges,
-      additionalChargeNote: appointmentPricingOptions.pitchChangeIncluded
-        ? 'Pitch change'
-        : current.additionalChargeNote === 'Pitch change'
-          ? ''
-          : current.additionalChargeNote,
+      additionalChargeNote: buildAdditionalChargeNote(
+        appointmentPricingOptions.pitchRaiseIncluded,
+        appointmentPricingOptions.repairsAmount,
+      ),
       taxAmount: breakdown.taxAmount,
     }))
   }
@@ -959,19 +1708,15 @@ function App() {
 
   function invoiceText(appointment: AppointmentRecord) {
     const venmoLink = invoiceVenmoLink(appointment) || 'Add your Venmo handle in Settings to generate a payment link.'
+    const chargeLines = appointmentChargeDetails(appointment).map(
+      ({ label, value }) => `${label}: ${value}`,
+    )
 
     return [
       `Hi ${appointment.customerName},`,
       '',
       `Thanks for scheduling your piano tuning appointment on ${shortDate(appointment.appointmentDate)}.`,
-      `Quoted estimate: ${currency(appointment.quotedEstimate)}`,
-      `Travel charge: ${currency(appointment.travelCharge)}`,
-      `Additional charges: ${currency(appointment.additionalCharges)}`,
-      appointment.additionalChargeNote
-        ? `Additional charge note: ${appointment.additionalChargeNote}`
-        : null,
-      `Tax: ${currency(appointment.taxAmount)}`,
-      `Total: ${currency(totalForAppointment(appointment))}`,
+      ...chargeLines,
       appointment.paymentMethod
         ? `Paid via: ${paymentMethodLabel(appointment.paymentMethod)}`
         : 'Payment options: Cash, Check, Venmo',
@@ -1000,6 +1745,12 @@ function App() {
       : ''
   }
 
+  function appointmentChangeNote() {
+    return settings.voicePhone.trim()
+      ? `Need to make a change to your appointment? ${settings.voicePhone.trim()}`
+      : ''
+  }
+
   function invoiceEmailText(appointment: AppointmentRecord) {
     return [
       `Hi ${appointment.customerName},`,
@@ -1010,6 +1761,123 @@ function App() {
       '',
       'Regards,',
       settings.emailSignature,
+    ].join('\n')
+  }
+
+  function appointmentCommunicationDetails(customer: CustomerRecord, appointment: AppointmentRecord) {
+    return [
+      { label: 'Date / time', value: fullDate(appointment.appointmentDate) },
+      { label: 'Name', value: customer.name },
+      { label: 'Address', value: customer.address || 'No address on file' },
+      { label: 'Quoted price', value: currency(totalForAppointment(appointment)) },
+    ]
+  }
+
+  function invoiceComposerDetails(customer: CustomerRecord, appointment: AppointmentRecord) {
+    return [
+      { label: 'Date / time', value: fullDate(appointment.appointmentDate) },
+      { label: 'Name', value: customer.name },
+      { label: 'Address', value: customer.address || 'No address on file' },
+      ...appointmentChargeDetails(appointment),
+    ]
+  }
+
+  function splitMessageForDetailBlock(text: string) {
+    const paragraphs = text
+      .split('\n\n')
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean)
+
+    return {
+      introText: paragraphs.slice(0, 2).join('\n\n'),
+      outroText: paragraphs.slice(2).join('\n\n'),
+    }
+  }
+
+  function detailTableHtml(details: Array<{ label: string; value: string }>) {
+    const rows = details
+      .map(
+        ({ label, value }) => `
+          <tr>
+            <td style="padding: 10px 0; border-bottom: 1px solid rgba(33, 76, 60, 0.08); color: #1f1a16; font-size: 16px; font-weight: 700;">
+              ${escapeHtml(label)}
+            </td>
+            <td style="padding: 10px 0; border-bottom: 1px solid rgba(33, 76, 60, 0.08); color: #1f1a16; font-size: 16px; text-align: right;">
+              ${escapeHtml(value)}
+            </td>
+          </tr>
+        `,
+      )
+      .join('')
+
+    return `
+      <div style="padding: 12px 0 0; margin: 0 0 16px;">
+        <table role="presentation" style="width: 420px; max-width: 100%; border-collapse: collapse; table-layout: fixed;">
+          <colgroup>
+            <col style="width: 54%;" />
+            <col style="width: 46%;" />
+          </colgroup>
+          ${rows}
+        </table>
+      </div>
+    `
+  }
+
+  function appointmentConfirmationText(customer: CustomerRecord) {
+    return [
+      `Hi ${customer.name},`,
+      '',
+      'Your piano tuning appointment is confirmed. Here are the details I have on the calendar.',
+      appointmentChangeNote(),
+      '',
+      'Thank you for supporting my piano tuning business.',
+      '',
+      'Regards,',
+      settings.emailSignature,
+    ].join('\n')
+  }
+
+  function appointmentReminderText(customer: CustomerRecord) {
+    return [
+      `Hi ${customer.name},`,
+      '',
+      'This is a reminder for your upcoming piano tuning appointment. Here are the details I have on the calendar.',
+      appointmentChangeNote(),
+      '',
+      'Thank you for supporting my piano tuning business.',
+      '',
+      'Regards,',
+      settings.emailSignature,
+    ].join('\n')
+  }
+
+  function appointmentConfirmationSms(customer: CustomerRecord, appointment: AppointmentRecord) {
+    return [
+      `Hi ${customer.name},`,
+      '',
+      'Your piano tuning appointment is confirmed:',
+      `Date/Time: ${fullDate(appointment.appointmentDate)}`,
+      `Name: ${customer.name}`,
+      `Address: ${customer.address || 'No address on file'}`,
+      `Quoted price: ${currency(totalForAppointment(appointment))}`,
+      appointmentChangeNote(),
+      '',
+      settings.smsSignature,
+    ].join('\n')
+  }
+
+  function appointmentReminderSms(customer: CustomerRecord, appointment: AppointmentRecord) {
+    return [
+      `Hi ${customer.name},`,
+      '',
+      'This is a reminder for your upcoming piano tuning appointment:',
+      `Date/Time: ${fullDate(appointment.appointmentDate)}`,
+      `Name: ${customer.name}`,
+      `Address: ${customer.address || 'No address on file'}`,
+      `Quoted price: ${currency(totalForAppointment(appointment))}`,
+      appointmentChangeNote(),
+      '',
+      settings.smsSignature,
     ].join('\n')
   }
 
@@ -1028,6 +1896,7 @@ function App() {
     body,
     ctaLabel,
     ctaHref,
+    eyebrowHref,
     plain,
   }: {
     eyebrow: string
@@ -1035,6 +1904,7 @@ function App() {
     body: string
     ctaLabel?: string
     ctaHref?: string
+    eyebrowHref?: string
     plain?: boolean
   }) {
     const cta = ctaLabel && ctaHref
@@ -1059,12 +1929,16 @@ function App() {
       ? 'transparent'
       : 'linear-gradient(180deg, rgba(33, 76, 60, 0.06), rgba(255, 250, 244, 0))'
 
+    const eyebrowContent = eyebrowHref
+      ? `<a href="${escapeHtml(eyebrowHref)}" style="color: #214c3c; text-decoration: none;">${escapeHtml(eyebrow)}</a>`
+      : escapeHtml(eyebrow)
+
     return `
       <div style="margin: 0; padding: 22px 10px; background: ${outerBackground}; font-family: Georgia, 'Times New Roman', serif; color: #1f1a16;">
         <div style="max-width: 520px; margin: 0; background: ${cardBackground}; border: ${cardBorder}; border-radius: ${cardRadius}; box-shadow: ${cardShadow}; overflow: hidden;">
           <div style="padding: 18px 0 12px; background: ${headerBackground};">
             <div style="font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; color: #6a5c4d; margin-bottom: 10px;">
-              ${escapeHtml(eyebrow)}
+              ${eyebrowContent}
             </div>
             <h1 style="margin: 0; font-size: 34px; line-height: 1.05; color: #214c3c;">
               ${escapeHtml(title)}
@@ -1105,6 +1979,7 @@ function App() {
       body: paragraphs,
       ctaLabel: options.ctaLabel,
       ctaHref: options.ctaHref,
+      eyebrowHref: normalizeUrl(settings.websiteUrl),
       plain: options.plain,
     })
   }
@@ -1123,63 +1998,17 @@ function App() {
 
   function invoiceHtml(appointment: AppointmentRecord, messageText = invoiceEmailText(appointment)) {
     const venmoLink = invoiceVenmoLink(appointment)
-
-    const paragraphs = messageText
-      .split('\n\n')
-      .map((paragraph) => paragraph.trim())
-      .filter(Boolean)
-    const introText = paragraphs.slice(0, 2).join('\n\n')
-    const outroText = paragraphs.slice(2).join('\n\n')
-
-    const rows = [
-      ['Quoted estimate', currency(appointment.quotedEstimate)],
-      ['Travel charge', currency(appointment.travelCharge)],
-      ['Additional charges', currency(appointment.additionalCharges)],
-      appointment.additionalChargeNote
-        ? ['Additional charge note', appointment.additionalChargeNote]
-        : null,
-      ['Tax', currency(appointment.taxAmount)],
-    ]
-      .filter((row): row is [string, string] => Boolean(row))
-      .map(
-        ([label, value]) => `
-          <tr>
-            <td style="padding: 10px 0; border-bottom: 1px solid rgba(33, 76, 60, 0.08); color: #1f1a16; font-size: 16px; font-weight: 700;">
-              ${escapeHtml(label)}
-            </td>
-            <td style="padding: 10px 0; border-bottom: 1px solid rgba(33, 76, 60, 0.08); color: #1f1a16; font-size: 16px; text-align: right;">
-              ${escapeHtml(value)}
-            </td>
-          </tr>
-        `,
-      )
-      .join('')
-
+    const customer = customerMap.get(appointment.customerId)
+    const { introText, outroText } = splitMessageForDetailBlock(messageText)
     const intro = introText ? proseEmailBody(introText) : ''
     const outro = outroText ? proseEmailBody(outroText) : ''
     const body = `
       ${intro}
-      <div style="padding: 12px 0 0; margin: 0 0 16px;">
-        <table role="presentation" style="width: 420px; max-width: 100%; border-collapse: collapse; table-layout: fixed;">
-          <colgroup>
-            <col style="width: 68%;" />
-            <col style="width: 32%;" />
-          </colgroup>
-          ${rows}
-          <tr>
-            <td style="padding: 12px 0 8px; color: #6a5c4d; font-size: 16px;">__________________________</td>
-            <td></td>
-          </tr>
-          <tr>
-            <td style="padding: 0; color: #1f1a16; font-size: 18px; font-weight: 700;">
-              Total
-            </td>
-            <td style="padding: 0; color: #1f1a16; font-size: 18px; font-weight: 700; text-align: right;">
-              ${escapeHtml(currency(totalForAppointment(appointment)))}
-            </td>
-          </tr>
-        </table>
-      </div>
+      ${detailTableHtml(
+        customer
+          ? invoiceComposerDetails(customer, appointment)
+          : appointmentChargeDetails(appointment),
+      )}
       <p style="margin: 0 0 10px; font-size: 16px; line-height: 1.7; color: #2f2923;">
         <strong>${appointment.paymentMethod ? 'Payment method:' : 'Payment options:'}</strong> ${escapeHtml(
           invoicePaymentLine(appointment).replace(/^Payment (method|options): /, ''),
@@ -1202,6 +2031,29 @@ function App() {
       eyebrow: settings.businessName,
       title: 'Invoice',
       body,
+      eyebrowHref: normalizeUrl(settings.websiteUrl),
+      plain: true,
+    })
+  }
+
+  function appointmentStructuredHtml(
+    customer: CustomerRecord,
+    appointment: AppointmentRecord,
+    messageText: string,
+    title: string,
+  ) {
+    const { introText, outroText } = splitMessageForDetailBlock(messageText)
+    const body = `
+      ${introText ? proseEmailBody(introText) : ''}
+      ${detailTableHtml(appointmentCommunicationDetails(customer, appointment))}
+      ${outroText ? proseEmailBody(outroText) : ''}
+    `
+
+    return emailShell({
+      eyebrow: settings.businessName,
+      title,
+      body,
+      eyebrowHref: normalizeUrl(settings.websiteUrl),
       plain: true,
     })
   }
@@ -1253,6 +2105,27 @@ function App() {
       title: 'Checking in after your tuning',
       plain: true,
     })
+  }
+
+  function appointmentConfirmationHtml(
+    customer: CustomerRecord,
+    appointment: AppointmentRecord,
+    messageText = appointmentConfirmationText(customer),
+  ) {
+    return appointmentStructuredHtml(
+      customer,
+      appointment,
+      messageText,
+      'Appointment confirmation',
+    )
+  }
+
+  function appointmentReminderHtml(
+    customer: CustomerRecord,
+    appointment: AppointmentRecord,
+    messageText = appointmentReminderText(customer),
+  ) {
+    return appointmentStructuredHtml(customer, appointment, messageText, 'Appointment reminder')
   }
 
   function marketingHtml(messageText = marketingText()) {
@@ -1436,6 +2309,22 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   />
                 </label>
                 <label>
+                  Contact preference
+                  <select
+                    value={customerForm.contactPreference}
+                    onChange={(event) =>
+                      setCustomerForm((current) => ({
+                        ...current,
+                        contactPreference: event.target.value as CustomerRecord['contactPreference'],
+                      }))
+                    }
+                  >
+                    <option value="">No preference</option>
+                    <option value="email">Email</option>
+                    <option value="sms">Text</option>
+                  </select>
+                </label>
+                <label>
                   Reminder months
                   <input
                     type="number"
@@ -1511,9 +2400,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                 <div className="button-row">
                   <button
                     className="ghost-button"
-                    onClick={() => setSelectedCustomerId('')}
+                    onClick={closeCustomerDetails}
                   >
-                    Back to directory
+                    {`Back to ${customerDetailOrigin.label}`}
                   </button>
                   <button
                     className="secondary-button"
@@ -1522,10 +2411,12 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     Edit
                   </button>
                   <button
-                    className="ghost-button danger"
-                    onClick={() => handleDeleteCustomer(selectedVisibleCustomer.id)}
+                    className="ghost-button danger icon-button danger-icon-button"
+                    onClick={() => queueDeleteCustomerConfirmation(selectedVisibleCustomer.id)}
+                    aria-label={`Delete ${selectedVisibleCustomer.name}`}
+                    title={`Delete ${selectedVisibleCustomer.name}`}
                   >
-                    Delete
+                    <TrashIcon />
                   </button>
                 </div>
               </div>
@@ -1564,6 +2455,10 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     <span>Follow-up cadence</span>
                     <strong>{selectedVisibleCustomer.followUpWeeks} weeks after service</strong>
                   </div>
+                  <div className="summary-item">
+                    <span>Contact preference</span>
+                    <strong>{contactPreferenceLabel(selectedVisibleCustomer.contactPreference)}</strong>
+                  </div>
                   <div className="summary-item full-span">
                     <span>Address</span>
                     <strong>
@@ -1593,12 +2488,14 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                       <p className="eyebrow">History</p>
                       <h3>Recent appointments</h3>
                     </div>
-                      <button
-                        className="ghost-button"
-                        onClick={() => startNewAppointment(selectedVisibleCustomer)}
-                      >
-                        Book appointment
-                      </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() =>
+                        startNewAppointment(selectedVisibleCustomer, detailOrigin('customers', 'customer'))
+                      }
+                    >
+                      Book appointment
+                    </button>
                   </div>
                   <div className="customer-history-list">
                     {customerAppointments(selectedVisibleCustomer.id)
@@ -1607,7 +2504,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         <button
                           key={appointment.id}
                           className="history-row"
-                          onClick={() => openAppointmentDetails(appointment)}
+                          onClick={() =>
+                            openAppointmentDetails(appointment, detailOrigin('customers', 'customer'))
+                          }
                         >
                           <strong>{shortDate(appointment.appointmentDate)}</strong>
                           <span>{appointment.status}</span>
@@ -1662,22 +2561,32 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                 {filteredCustomers.map((customer) => {
                   const lastService = lastServiceForCustomer(customer.id)
                   return (
-                    <button
-                      key={customer.id}
-                      className="customer-card"
-                      onClick={() => setSelectedCustomerId(customer.id)}
-                    >
-                      <div className="customer-card-primary">
-                        <strong>{customer.name}</strong>
-                      </div>
-                      <div className="customer-card-secondary">
-                        <span>
-                          {lastService
-                            ? `Last tuned ${shortDate(lastService.appointmentDate)}`
-                            : 'No service history yet'}
-                        </span>
-                      </div>
-                    </button>
+                    <div key={customer.id} className="customer-row">
+                      <button
+                        className="customer-card customer-card-button"
+                        onClick={() => setSelectedCustomerId(customer.id)}
+                      >
+                        <div className="customer-card-primary">
+                          <strong>{customer.name}</strong>
+                        </div>
+                        <div className="customer-card-secondary">
+                          <span>
+                            {lastService
+                              ? `Last tuned ${shortDate(lastService.appointmentDate)}`
+                              : 'No service history yet'}
+                          </span>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button danger icon-button danger-icon-button customer-row-delete"
+                        onClick={() => queueDeleteCustomerConfirmation(customer.id)}
+                        aria-label={`Delete ${customer.name}`}
+                        title={`Delete ${customer.name}`}
+                      >
+                        <TrashIcon />
+                      </button>
+                    </div>
                   )
                 })}
                 {filteredCustomers.length === 0 ? (
@@ -1764,7 +2673,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   <button
                     key={appointment.id}
                     className="queue-card recent-sales-row"
-                    onClick={() => openAppointmentDetails(appointment)}
+                    onClick={() =>
+                      openAppointmentDetails(appointment, detailOrigin('reports', 'sales reports'))
+                    }
                   >
                     <strong className="recent-sales-customer">{appointment.customerName}</strong>
                     <span className="recent-sales-date">{fullDate(appointment.appointmentDate)}</span>
@@ -1803,7 +2714,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
               </div>
               <button
                 className="secondary-button"
-                onClick={() => startNewAppointment(selectedCustomer)}
+                onClick={() =>
+                  startNewAppointment(selectedCustomer, detailOrigin('appointments', 'calendar'))
+                }
               >
                 New appointment
               </button>
@@ -1834,7 +2747,12 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                           <tr
                             key={appointment.id}
                             className="interactive-row"
-                            onClick={() => openAppointmentDetails(appointment)}
+                            onClick={() =>
+                              openAppointmentDetails(
+                                appointment,
+                                detailOrigin('appointments', 'calendar'),
+                              )
+                            }
                           >
                             <td>{shortDateTime(appointment.appointmentDate)}</td>
                             <td>{appointment.customerName}</td>
@@ -1907,7 +2825,12 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                               key={appointment.id}
                               type="button"
                               className={calendarEventClass(appointment.status)}
-                              onClick={() => openAppointmentDetails(appointment)}
+                              onClick={() =>
+                                openAppointmentDetails(
+                                  appointment,
+                                  detailOrigin('appointments', 'calendar'),
+                                )
+                              }
                               title={`${format(parseISO(appointment.appointmentDate), 'h:mm a')} ${appointment.customerName}`}
                             >
                               <span className="calendar-event-time">
@@ -1937,7 +2860,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   <button
                     type="button"
                     className="appointment-main service-history-main"
-                    onClick={() => openAppointmentDetails(appointment)}
+                    onClick={() =>
+                      openAppointmentDetails(appointment, detailOrigin('appointments', 'calendar'))
+                    }
                   >
                     <strong className="service-history-customer">{appointment.customerName}</strong>
                     <span className="service-history-date">{fullDate(appointment.appointmentDate)}</span>
@@ -1946,10 +2871,12 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     </span>
                   </button>
                   <button
-                    className="ghost-button danger service-history-delete"
-                    onClick={() => handleDeleteAppointment(appointment.id)}
+                    className="ghost-button danger icon-button danger-icon-button service-history-delete"
+                    onClick={() => queueDeleteAppointmentConfirmation(appointment.id)}
+                    aria-label={`Delete appointment for ${appointment.customerName}`}
+                    title={`Delete appointment for ${appointment.customerName}`}
                   >
-                    Delete
+                    <TrashIcon />
                   </button>
                 </div>
               ))}
@@ -1982,24 +2909,39 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     <button
                       type="button"
                       className="ghost-button"
-                      onClick={() => setIsAppointmentEditing(false)}
+                      onClick={cancelAppointmentEditing}
                     >
                       Cancel
                     </button>
                   </>
                 ) : selectedAppointment ? (
                   <>
-                    <button type="button" className="ghost-button" onClick={resetAppointmentForm}>
-                      Back to calendar
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={closeAppointmentDetails}
+                    >
+                      {`Back to ${appointmentDetailOrigin.label}`}
                     </button>
                     <button
                       type="button"
                       className="secondary-button"
                       onClick={() =>
-                        selectedAppointment ? beginAppointmentEdit(selectedAppointment) : null
+                        selectedAppointment
+                          ? beginAppointmentEdit(selectedAppointment, appointmentDetailOrigin)
+                          : null
                       }
                     >
                       Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-button danger icon-button danger-icon-button"
+                      onClick={() => queueDeleteAppointmentConfirmation(selectedAppointment.id)}
+                      aria-label={`Delete appointment for ${selectedAppointment.customerName}`}
+                      title={`Delete appointment for ${selectedAppointment.customerName}`}
+                    >
+                      <TrashIcon />
                     </button>
                   </>
                 ) : null}
@@ -2108,9 +3050,10 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                       Target total {currency(
                         STANDARD_APPOINTMENT_TOTAL +
                           (appointmentPricingOptions.travelIncluded ? TRAVEL_TOTAL_UPCHARGE : 0) +
-                          (appointmentPricingOptions.pitchChangeIncluded
-                            ? PITCH_CHANGE_TOTAL_UPCHARGE
-                            : 0),
+                          (appointmentPricingOptions.pitchRaiseIncluded
+                            ? PITCH_RAISE_TOTAL_UPCHARGE
+                            : 0) +
+                          appointmentPricingOptions.repairsAmount,
                       )}{' '}
                       including tax
                     </span>
@@ -2132,15 +3075,33 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     <label className="checkbox-row">
                       <input
                         type="checkbox"
-                        checked={appointmentPricingOptions.pitchChangeIncluded}
+                        checked={appointmentPricingOptions.pitchRaiseIncluded}
                         onChange={(event) =>
                           setAppointmentPricingOptions((current) => ({
                             ...current,
-                            pitchChangeIncluded: event.target.checked,
+                            pitchRaiseIncluded: event.target.checked,
                           }))
                         }
                       />
-                      Pitch change
+                      Pitch raise
+                    </label>
+                    <label>
+                      Repairs
+                      <select
+                        value={appointmentPricingOptions.repairsAmount}
+                        onChange={(event) =>
+                          setAppointmentPricingOptions((current) => ({
+                            ...current,
+                            repairsAmount: Number(event.target.value),
+                          }))
+                        }
+                      >
+                        {repairAmountOptions.map((amount) => (
+                          <option key={amount} value={amount}>
+                            {amount === 0 ? 'None' : currency(amount)}
+                          </option>
+                        ))}
+                      </select>
                     </label>
                     <button
                       type="button"
@@ -2185,7 +3146,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   />
                 </label>
                 <label>
-                  Additional charges
+                  Pitch raise + repairs total
                   <input
                     type="number"
                     min="0"
@@ -2204,9 +3165,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   />
                 </label>
                 <label>
-                  Additional charge note
+                  Pitch raise / repairs note
                   <input
-                    placeholder="What is this for?"
+                    placeholder="Repair details or notes"
                     value={appointmentForm.additionalChargeNote}
                     onChange={(event) =>
                       setAppointmentForm((current) => ({
@@ -2267,9 +3228,21 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   <span>Total due</span>
                   <strong>{currency(totalForAppointment(appointmentForm))}</strong>
                 </div>
+                <div className="full-width detail-actions">
+                  <button
+                    type="submit"
+                    className="primary-button"
+                    disabled={loading}
+                  >
+                    {appointmentForm.id ? 'Save appointment' : 'Create appointment'}
+                  </button>
+                </div>
               </form>
             ) : selectedAppointment ? (
               <div className="detail-card appointment-detail-card">
+                {(() => {
+                  const chargeDetails = appointmentChargeDetails(selectedAppointment)
+                  return (
                 <div className="appointment-summary-grid">
                   <div className="summary-item">
                     <span>Customer</span>
@@ -2287,26 +3260,14 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     <span>Total due</span>
                     <strong>{currency(totalForAppointment(selectedAppointment))}</strong>
                   </div>
-                  <div className="summary-item">
-                    <span>Quoted estimate</span>
-                    <strong>{currency(selectedAppointment.quotedEstimate)}</strong>
-                  </div>
-                  <div className="summary-item">
-                    <span>Travel charge</span>
-                    <strong>{currency(selectedAppointment.travelCharge)}</strong>
-                  </div>
-                  <div className="summary-item">
-                    <span>Additional charges</span>
-                    <strong>{currency(selectedAppointment.additionalCharges)}</strong>
-                  </div>
-                  <div className="summary-item">
-                    <span>Additional charge note</span>
-                    <strong>{selectedAppointment.additionalChargeNote || 'No additional charge note'}</strong>
-                  </div>
-                  <div className="summary-item">
-                    <span>Tax amount</span>
-                    <strong>{currency(selectedAppointment.taxAmount)}</strong>
-                  </div>
+                  {chargeDetails
+                    .filter(({ label }) => label !== 'Total')
+                    .map(({ label, value }) => (
+                      <div key={label} className="summary-item">
+                        <span>{label}</span>
+                        <strong>{value}</strong>
+                      </div>
+                    ))}
                   <div className="summary-item">
                     <span>Payment method</span>
                     <strong>{paymentMethodLabel(selectedAppointment.paymentMethod)}</strong>
@@ -2344,6 +3305,8 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     </strong>
                   </div>
                 </div>
+                  )
+                })()}
                 <div className="summary-notes">
                   <span>Notes</span>
                   <p className="detail-notes">{selectedAppointment.notes || 'No notes yet.'}</p>
@@ -2396,22 +3359,39 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
             <div className="appointment-list">
               {filteredServiceHistoryAppointments.map((appointment) => (
                 <div key={appointment.id} className="appointment-card service-history-row">
+                  <div className="service-history-main">
+                    <button
+                      type="button"
+                      className="inline-link-button workflow-name-link service-history-customer-link"
+                      onClick={() =>
+                        openCustomerDetails(
+                          appointment.customerId,
+                          detailOrigin('history', 'service history'),
+                        )
+                      }
+                    >
+                      {appointment.customerName}
+                    </button>
+                    <button
+                      type="button"
+                      className="appointment-main service-history-detail-trigger"
+                      onClick={() =>
+                        openAppointmentDetails(appointment, detailOrigin('history', 'service history'))
+                      }
+                    >
+                      <span className="service-history-date">{fullDate(appointment.appointmentDate)}</span>
+                      <span className="service-history-summary">
+                        {appointment.status} • {currency(totalForAppointment(appointment))}
+                      </span>
+                    </button>
+                  </div>
                   <button
-                    type="button"
-                    className="appointment-main service-history-main"
-                    onClick={() => openAppointmentDetails(appointment)}
+                    className="ghost-button danger icon-button danger-icon-button service-history-delete"
+                    onClick={() => queueDeleteAppointmentConfirmation(appointment.id)}
+                    aria-label={`Delete appointment for ${appointment.customerName}`}
+                    title={`Delete appointment for ${appointment.customerName}`}
                   >
-                    <strong className="service-history-customer">{appointment.customerName}</strong>
-                    <span className="service-history-date">{fullDate(appointment.appointmentDate)}</span>
-                    <span className="service-history-summary">
-                      {appointment.status} • {currency(totalForAppointment(appointment))}
-                    </span>
-                  </button>
-                  <button
-                    className="ghost-button danger service-history-delete"
-                    onClick={() => handleDeleteAppointment(appointment.id)}
-                  >
-                    Delete
+                    <TrashIcon />
                   </button>
                 </div>
               ))}
@@ -2420,6 +3400,357 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   {filters.serviceHistorySearch
                     ? 'No service visits match that search.'
                     : 'No completed appointments are recorded yet.'}
+                </p>
+              ) : null}
+            </div>
+          </article>
+        </section>
+      ) : null}
+
+      {activeTab === 'invoices' ? (
+        <section className="workflow-grid">
+          <article className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Invoicing</p>
+                <h2>Not yet invoiced</h2>
+              </div>
+              <span>{uninvoicedAppointments.length} shown</span>
+            </div>
+            {renderInvoiceQueue(
+              uninvoicedAppointments,
+              'No completed appointments are waiting for an invoice.',
+              (appointment) => `Service date ${shortDate(appointment.appointmentDate)}`,
+            )}
+          </article>
+
+          <article className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Invoicing</p>
+                <h2>Invoiced, not yet paid</h2>
+              </div>
+              <span>{unpaidAppointments.length} shown</span>
+            </div>
+            {renderInvoiceQueue(
+              unpaidAppointments,
+              'No invoiced appointments are still waiting for payment.',
+              (appointment) =>
+                appointment.invoiceSentAt
+                  ? `Invoice sent ${shortDate(appointment.invoiceSentAt)}`
+                  : 'Invoice ready to send',
+            )}
+          </article>
+
+          <article className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Invoicing</p>
+                <h2>Paid in the last 2 weeks</h2>
+              </div>
+              <span>{recentlyPaidAppointments.length} shown</span>
+            </div>
+            {renderInvoiceQueue(
+              recentlyPaidAppointments,
+              'No appointments have been marked paid in the last 2 weeks.',
+              (appointment) =>
+                `Paid ${shortDate(appointment.updatedAt)} • ${paymentMethodLabel(appointment.paymentMethod)}`,
+              {
+                showCommunicationActions: false,
+              },
+            )}
+          </article>
+        </section>
+      ) : null}
+
+      {activeTab === 'followups' ? (
+        <section className="workflow-grid">
+          <article className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Future appointments</p>
+                <h2>Future appointments - send reminders</h2>
+              </div>
+            </div>
+            <div className="queue-list">
+              {upcomingAppointmentQueue.map(({ appointment, customer }) => {
+                const lastReminder = latestAppointmentReminderByAppointmentId.get(appointment.id)
+
+                return (
+                  <div key={appointment.id} className="queue-card">
+                    <div>
+                      <button
+                        type="button"
+                        className="inline-link-button workflow-name-link"
+                        onClick={() => openCustomerDetails(customer.id, detailOrigin('followups', 'follow-ups'))}
+                      >
+                        {customer.name}
+                      </button>
+                      <span>{fullDate(appointment.appointmentDate)}</span>
+                      <span>{customer.address || 'No address on file'}</span>
+                      <span>
+                        {lastReminder
+                          ? `Last reminder ${communicationChannelLabel(lastReminder.channel).toLowerCase()} ${shortDate(lastReminder.createdAt)}`
+                          : 'No reminder sent yet'}
+                      </span>
+                    </div>
+                    <div className="button-row">
+                      <button
+                        className="secondary-button"
+                        onClick={() =>
+                          openAppointmentDetails(appointment, detailOrigin('followups', 'follow-ups'))
+                        }
+                      >
+                        Appointment
+                      </button>
+                      {customerCanUseChannel(customer, 'email') ? (
+                        <button
+                          className="secondary-button"
+                          onClick={() =>
+                            openUpcomingAppointmentReminderComposer('email', customer, appointment)
+                          }
+                        >
+                          Email
+                        </button>
+                      ) : null}
+                      {customerCanUseChannel(customer, 'sms') ? (
+                        <button
+                          className="secondary-button"
+                          onClick={() =>
+                            openUpcomingAppointmentReminderComposer('sms', customer, appointment)
+                          }
+                        >
+                          Text
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                )
+              })}
+              {upcomingAppointmentQueue.length === 0 ? (
+                <p className="empty-state">No upcoming scheduled appointments in the next week.</p>
+              ) : null}
+            </div>
+          </article>
+
+          <article className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Reminders</p>
+                <h2>Customers due for the next tuning</h2>
+              </div>
+            </div>
+            <div className="queue-list">
+              {reminderQueue.map(({ customer, lastService, dueDate }) => (
+                <div key={customer.id} className="queue-card">
+                  <div>
+                    <button
+                      type="button"
+                      className="inline-link-button workflow-name-link"
+                      onClick={() => openCustomerDetails(customer.id, detailOrigin('followups', 'follow-ups'))}
+                    >
+                      {customer.name}
+                    </button>
+                    <span>Last service {shortDate(lastService.appointmentDate)}</span>
+                    <span>Reminder due {shortDate(dueDate.toISOString())}</span>
+                  </div>
+                  <div className="button-row">
+                    <button
+                      className="secondary-button"
+                      onClick={() =>
+                        openAppointmentDetails(lastService, detailOrigin('followups', 'follow-ups'))
+                      }
+                    >
+                      Appointment
+                    </button>
+                    {customerCanUseChannel(customer, 'email') ? (
+                      <button
+                        className="secondary-button"
+                        onClick={() => openRecurringReminderComposer('email', customer, lastService)}
+                      >
+                        Email
+                      </button>
+                    ) : null}
+                    {customerCanUseChannel(customer, 'sms') ? (
+                      <button
+                        className="secondary-button"
+                        onClick={() => openRecurringReminderComposer('sms', customer, lastService)}
+                      >
+                        Text
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </article>
+
+          <article className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Follow-up</p>
+                <h2>Post-appointment check-ins</h2>
+              </div>
+            </div>
+            <div className="queue-list">
+              {followUpQueue.map(({ appointment, customer }) => (
+                <div key={appointment.id} className="queue-card follow-up-card">
+                  <div>
+                    <button
+                      type="button"
+                      className="inline-link-button workflow-name-link"
+                      onClick={() => openCustomerDetails(customer.id, detailOrigin('followups', 'follow-ups'))}
+                    >
+                      {customer.name}
+                    </button>
+                    <span>
+                      <strong>Service date</strong> {shortDate(appointment.appointmentDate)}
+                    </span>
+                    <span>
+                      <strong>Follow-up window</strong> {customer.followUpWeeks} weeks
+                    </span>
+                  </div>
+                  <div className="button-row follow-up-actions">
+                    <button
+                      className="secondary-button"
+                      onClick={() =>
+                        openAppointmentDetails(appointment, detailOrigin('followups', 'follow-ups'))
+                      }
+                    >
+                      Appointment
+                    </button>
+                    {customerCanUseChannel(customer, 'email') ? (
+                      <button
+                        className="secondary-button"
+                        onClick={() => openFollowUpComposer('email', customer, appointment)}
+                      >
+                        Email
+                      </button>
+                    ) : null}
+                    {customerCanUseChannel(customer, 'sms') ? (
+                      <button
+                        className="secondary-button"
+                        onClick={() => openFollowUpComposer('sms', customer, appointment)}
+                      >
+                        Text
+                      </button>
+                    ) : null}
+                    <button
+                      className="ghost-button danger icon-button follow-up-delete-button"
+                      onClick={() => queueCancelFollowUpConfirmation(appointment)}
+                      aria-label="Cancel follow-up reminder"
+                      title="Cancel follow-up reminder"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        width="16"
+                        height="16"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path
+                          d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v8h-2V9zm4 0h2v8h-2V9zM7 9h2v8H7V9zm1 12a2 2 0 0 1-2-2V8h12v11a2 2 0 0 1-2 2H8z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {followUpQueue.length === 0 ? (
+                <p className="empty-state">No follow-up reminders are waiting right now.</p>
+              ) : null}
+            </div>
+          </article>
+        </section>
+      ) : null}
+
+      {activeTab === 'communications' ? (
+        <section className="workspace-grid single">
+          <article className="panel communication-log-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Communication Log</p>
+                <h2>Recent sent customer messages</h2>
+              </div>
+              <span>{filteredCommunicationLogs.length} shown</span>
+            </div>
+            <div className="customer-directory-controls">
+              <input
+                placeholder="Search customer, recipient, subject, message, channel"
+                value={filters.communicationSearch}
+                onChange={(event) =>
+                  setFilters((current) => ({
+                    ...current,
+                    communicationSearch: event.target.value,
+                  }))
+                }
+              />
+            </div>
+            <div className="queue-list communication-log-list">
+              {filteredCommunicationLogs.slice(0, 40).map((item) => {
+                const customer = item.customerId ? customerMap.get(item.customerId) : null
+                const appointment = item.appointmentId
+                  ? appointments.find((candidate) => candidate.id === item.appointmentId) ?? null
+                  : null
+
+                return (
+                  <div key={item.id} className="queue-card communication-log-row">
+                    <div>
+                      {customer ? (
+                        <button
+                          type="button"
+                          className="inline-link-button workflow-name-link"
+                          onClick={() =>
+                            openCustomerDetails(customer.id, detailOrigin('communications', 'communication log'))
+                          }
+                        >
+                          {customer.name}
+                        </button>
+                      ) : (
+                        <strong>{appointment?.customerName || item.recipient}</strong>
+                      )}
+                      <span>
+                        {communicationChannelLabel(item.channel)} • {communicationKindLabel(item.kind)} •{' '}
+                        {fullDate(item.createdAt)}
+                      </span>
+                      <span>
+                        To: {item.recipient}
+                        {item.subject ? ` • ${item.subject}` : ''}
+                      </span>
+                      <span>{communicationPreview(item.body).slice(0, 220)}</span>
+                    </div>
+                    {appointment ? (
+                      <div className="button-row">
+                        <button
+                          className="secondary-button"
+                          onClick={() =>
+                            openAppointmentDetails(
+                              appointment,
+                              detailOrigin('communications', 'communication log'),
+                            )
+                          }
+                        >
+                          Appointment
+                        </button>
+                        {appointment.status !== 'paid' ? (
+                          <button
+                            className="secondary-button"
+                            onClick={() => openMarkPaidModal(appointment)}
+                          >
+                            Mark paid
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              })}
+              {filteredCommunicationLogs.length === 0 ? (
+                <p className="empty-state">
+                  {filters.communicationSearch
+                    ? 'No sent communications match that search.'
+                    : 'No customer communications have been sent yet.'}
                 </p>
               ) : null}
             </div>
@@ -2437,10 +3768,16 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
               </div>
             </div>
             <div className="queue-list">
-              {appointments.slice(0, 8).map((appointment) => (
-                <div key={appointment.id} className="queue-card">
+              {invoiceQueueAppointments.slice(0, 8).map((appointment) => (
+                <div key={appointment.id} className="queue-card invoice-queue-card">
                   <div>
-                    <strong>{appointment.customerName}</strong>
+                    <button
+                      type="button"
+                      className="inline-link-button workflow-name-link"
+                      onClick={() => openCustomerDetailsFromWorkflow(appointment.customerId)}
+                    >
+                      {appointment.customerName}
+                    </button>
                     <span>{currency(totalForAppointment(appointment))}</span>
                     <span>
                       {appointment.invoiceSentAt
@@ -2448,64 +3785,142 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         : 'Not sent yet'}
                     </span>
                   </div>
-                  <div className="button-row">
-                    <button
-                      className="secondary-button"
-                      onClick={() => {
-                        const customer = customerMap.get(appointment.customerId)
-                        if (!customer?.email) {
-                          setErrorText('This customer does not have an email address.')
-                          return
+                  <div className="workflow-action-stack">
+                    <div className="workflow-action-row workflow-action-row-primary">
+                      {customerMap.get(appointment.customerId) &&
+                      customerCanUseChannel(customerMap.get(appointment.customerId)!, 'email') ? (
+                        <button
+                          className="secondary-button"
+                          onClick={() =>
+                            openInvoiceComposer(
+                              'email',
+                              customerMap.get(appointment.customerId)!,
+                              appointment,
+                            )
+                          }
+                        >
+                          Email
+                        </button>
+                      ) : null}
+                      {customerMap.get(appointment.customerId) &&
+                      customerCanUseChannel(customerMap.get(appointment.customerId)!, 'sms') ? (
+                        <button
+                          className="secondary-button"
+                          onClick={() =>
+                            openInvoiceComposer(
+                              'sms',
+                              customerMap.get(appointment.customerId)!,
+                              appointment,
+                            )
+                          }
+                        >
+                          Text
+                        </button>
+                      ) : null}
+                      <button
+                        className="secondary-button"
+                        onClick={() =>
+                          copyText(invoiceText(appointment), 'Invoice text copied to clipboard.')
                         }
-                        openMessageComposer({
-                          channel: 'email',
-                          customerId: customer.id,
-                          appointmentId: appointment.id,
-                          kind: 'invoice',
-                          recipient: customer.email,
-                          subject: `Invoice from ${settings.businessName}`,
-                          message: invoiceEmailText(appointment),
-                          title: 'Invoice',
-                          statusMessage: `Invoice email sent to ${customer.name}.`,
-                        })
-                      }}
-                    >
-                      Email
-                    </button>
-                    <button
-                      className="secondary-button"
-                      onClick={() => {
-                        const customer = customerMap.get(appointment.customerId)
-                        if (!customer?.phone) {
-                          setErrorText('This customer does not have a phone number.')
-                          return
-                        }
-                        openMessageComposer({
-                          channel: 'sms',
-                          customerId: customer.id,
-                          appointmentId: appointment.id,
-                          kind: 'invoice',
-                          recipient: customer.phone,
-                          subject: '',
-                          message: invoiceText(appointment),
-                          title: 'Invoice text',
-                          statusMessage: `Invoice text sent to ${customer.name}.`,
-                        })
-                      }}
-                    >
-                      Text
-                    </button>
-                    <button
-                      className="ghost-button"
-                      onClick={() =>
-                        copyText(invoiceText(appointment), 'Invoice text copied to clipboard.')
-                      }
-                    >
-                      Copy
-                    </button>
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <div className="workflow-action-row workflow-action-row-secondary">
+                      <button
+                        className="secondary-button"
+                        onClick={() => openAppointmentDetails(appointment)}
+                      >
+                        Appointment
+                      </button>
+                      {appointment.status !== 'paid' ? (
+                        <button
+                          className="secondary-button"
+                          onClick={() => openMarkPaidModal(appointment)}
+                        >
+                          Mark paid
+                        </button>
+                      ) : (
+                        <span className="paid-badge" aria-label="Appointment paid">
+                          <span className="paid-badge-check" aria-hidden="true">
+                            ✓
+                          </span>
+                          <span>Paid</span>
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}
+              {invoiceQueueAppointments.length === 0 ? (
+                <p className="empty-state">No completed or billed appointments are ready to invoice.</p>
+              ) : null}
+            </div>
+          </article>
+
+          <article className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Upcoming</p>
+                <h2>Appointments in the next week</h2>
+              </div>
+            </div>
+            <div className="queue-list">
+              {upcomingAppointmentQueue.map(({ appointment, customer }) => {
+                const lastReminder = latestAppointmentReminderByAppointmentId.get(appointment.id)
+
+                return (
+                  <div key={appointment.id} className="queue-card">
+                    <div>
+                      <button
+                        type="button"
+                        className="inline-link-button workflow-name-link"
+                        onClick={() => openCustomerDetailsFromWorkflow(customer.id)}
+                      >
+                        {customer.name}
+                      </button>
+                      <span>{fullDate(appointment.appointmentDate)}</span>
+                      <span>{customer.address || 'No address on file'}</span>
+                      <span>
+                        {lastReminder
+                          ? `Last reminder ${communicationChannelLabel(lastReminder.channel).toLowerCase()} ${shortDate(lastReminder.createdAt)}`
+                          : 'No reminder sent yet'}
+                      </span>
+                    </div>
+                    <div className="button-row">
+                      <button
+                        className="secondary-button"
+                        onClick={() => openAppointmentDetails(appointment)}
+                      >
+                        Appointment
+                      </button>
+                      {customerCanUseChannel(customer, 'email') ? (
+                        <button
+                          className="secondary-button"
+                          onClick={() =>
+                            openUpcomingAppointmentReminderComposer('email', customer, appointment)
+                          }
+                        >
+                          Email
+                        </button>
+                      ) : null}
+                      {customerCanUseChannel(customer, 'sms') ? (
+                        <button
+                          className="secondary-button"
+                          onClick={() =>
+                            openUpcomingAppointmentReminderComposer('sms', customer, appointment)
+                          }
+                        >
+                          Text
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                )
+              })}
+              {upcomingAppointmentQueue.length === 0 ? (
+                <p className="empty-state">No upcoming scheduled appointments in the next week.</p>
+              ) : null}
             </div>
           </article>
 
@@ -2520,55 +3935,39 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
               {reminderQueue.map(({ customer, lastService, dueDate }) => (
                 <div key={customer.id} className="queue-card">
                   <div>
-                    <strong>{customer.name}</strong>
+                    <button
+                      type="button"
+                      className="inline-link-button workflow-name-link"
+                      onClick={() => openCustomerDetailsFromWorkflow(customer.id)}
+                    >
+                      {customer.name}
+                    </button>
                     <span>Last service {shortDate(lastService.appointmentDate)}</span>
                     <span>Reminder due {shortDate(dueDate.toISOString())}</span>
                   </div>
                   <div className="button-row">
                     <button
                       className="secondary-button"
-                      onClick={() => {
-                        if (!customer.email) {
-                          setErrorText('This customer does not have an email address.')
-                          return
-                        }
-                        openMessageComposer({
-                          channel: 'email',
-                          customerId: customer.id,
-                          appointmentId: lastService.id,
-                          kind: 'reminder',
-                          recipient: customer.email,
-                          subject: 'Time to schedule your next piano tuning',
-                          message: reminderText(customer, lastService),
-                          title: 'Time for your next tuning',
-                          statusMessage: `Reminder email sent to ${customer.name}.`,
-                        })
-                      }}
+                      onClick={() => openAppointmentDetails(lastService)}
                     >
-                      Email
+                      Appointment
                     </button>
-                    <button
-                      className="secondary-button"
-                      onClick={() => {
-                        if (!customer.phone) {
-                          setErrorText('This customer does not have a phone number.')
-                          return
-                        }
-                        openMessageComposer({
-                          channel: 'sms',
-                          customerId: customer.id,
-                          appointmentId: lastService.id,
-                          kind: 'reminder',
-                          recipient: customer.phone,
-                          subject: '',
-                          message: reminderText(customer, lastService),
-                          title: 'Reminder text',
-                          statusMessage: `Reminder text sent to ${customer.name}.`,
-                        })
-                      }}
-                    >
-                      Text
-                    </button>
+                    {customerCanUseChannel(customer, 'email') ? (
+                      <button
+                        className="secondary-button"
+                        onClick={() => openRecurringReminderComposer('email', customer, lastService)}
+                      >
+                        Email
+                      </button>
+                    ) : null}
+                    {customerCanUseChannel(customer, 'sms') ? (
+                      <button
+                        className="secondary-button"
+                        onClick={() => openRecurringReminderComposer('sms', customer, lastService)}
+                      >
+                        Text
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               ))}
@@ -2586,58 +3985,132 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
               {followUpQueue.map(({ appointment, customer }) => (
                 <div key={appointment.id} className="queue-card">
                   <div>
-                    <strong>{customer.name}</strong>
+                    <button
+                      type="button"
+                      className="inline-link-button workflow-name-link"
+                      onClick={() => openCustomerDetailsFromWorkflow(customer.id)}
+                    >
+                      {customer.name}
+                    </button>
                     <span>Service date {shortDate(appointment.appointmentDate)}</span>
                     <span>Follow-up window {customer.followUpWeeks} weeks</span>
                   </div>
                   <div className="button-row">
                     <button
                       className="secondary-button"
-                      onClick={() => {
-                        if (!customer.email) {
-                          setErrorText('This customer does not have an email address.')
-                          return
-                        }
-                        openMessageComposer({
-                          channel: 'email',
-                          customerId: customer.id,
-                          appointmentId: appointment.id,
-                          kind: 'follow_up',
-                          recipient: customer.email,
-                          subject: 'Checking in on your piano',
-                          message: followUpText(customer, appointment),
-                          title: 'Checking in after your tuning',
-                          statusMessage: `Follow-up email sent to ${customer.name}.`,
-                        })
-                      }}
+                      onClick={() => openAppointmentDetails(appointment)}
                     >
-                      Email
+                      Appointment
                     </button>
+                    {customerCanUseChannel(customer, 'email') ? (
+                      <button
+                        className="secondary-button"
+                        onClick={() => openFollowUpComposer('email', customer, appointment)}
+                      >
+                        Email
+                      </button>
+                    ) : null}
+                    {customerCanUseChannel(customer, 'sms') ? (
+                      <button
+                        className="secondary-button"
+                        onClick={() => openFollowUpComposer('sms', customer, appointment)}
+                      >
+                        Text
+                      </button>
+                    ) : null}
                     <button
-                      className="secondary-button"
-                      onClick={() => {
-                        if (!customer.phone) {
-                          setErrorText('This customer does not have a phone number.')
-                          return
-                        }
-                        openMessageComposer({
-                          channel: 'sms',
-                          customerId: customer.id,
-                          appointmentId: appointment.id,
-                          kind: 'follow_up',
-                          recipient: customer.phone,
-                          subject: '',
-                          message: followUpText(customer, appointment),
-                          title: 'Follow-up text',
-                          statusMessage: `Follow-up text sent to ${customer.name}.`,
-                        })
-                      }}
+                      className="ghost-button danger"
+                      onClick={() => queueCancelFollowUpConfirmation(appointment)}
                     >
-                      Text
+                      Cancel
                     </button>
                   </div>
                 </div>
               ))}
+              {followUpQueue.length === 0 ? (
+                <p className="empty-state">No follow-up reminders are waiting right now.</p>
+              ) : null}
+            </div>
+          </article>
+
+          <article className="panel communication-log-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Communication Log</p>
+                <h2>Recent sent customer messages</h2>
+              </div>
+              <span>{filteredCommunicationLogs.length} shown</span>
+            </div>
+            <div className="customer-directory-controls">
+              <input
+                placeholder="Search customer, recipient, subject, message, channel"
+                value={filters.communicationSearch}
+                onChange={(event) =>
+                  setFilters((current) => ({
+                    ...current,
+                    communicationSearch: event.target.value,
+                  }))
+                }
+              />
+            </div>
+            <div className="queue-list communication-log-list">
+              {filteredCommunicationLogs.slice(0, 40).map((item) => {
+                const customer = item.customerId ? customerMap.get(item.customerId) : null
+                const appointment = item.appointmentId
+                  ? appointments.find((candidate) => candidate.id === item.appointmentId) ?? null
+                  : null
+
+                return (
+                  <div key={item.id} className="queue-card communication-log-row">
+                    <div>
+                      {customer ? (
+                        <button
+                          type="button"
+                          className="inline-link-button workflow-name-link"
+                          onClick={() => openCustomerDetailsFromWorkflow(customer.id)}
+                        >
+                          {customer.name}
+                        </button>
+                      ) : (
+                        <strong>{appointment?.customerName || item.recipient}</strong>
+                      )}
+                      <span>
+                        {communicationChannelLabel(item.channel)} • {communicationKindLabel(item.kind)} • {fullDate(item.createdAt)}
+                      </span>
+                      <span>
+                        To: {item.recipient}
+                        {item.subject ? ` • ${item.subject}` : ''}
+                      </span>
+                      <span>{communicationPreview(item.body).slice(0, 220)}</span>
+                    </div>
+                    {appointment ? (
+                      <div className="button-row">
+                        <button
+                          className="secondary-button"
+                          onClick={() => openAppointmentDetails(appointment)}
+                        >
+                          Appointment
+                        </button>
+                        {appointment.status !== 'paid' ? (
+                          <button
+                            className="secondary-button"
+                            onClick={() => openMarkPaidModal(appointment)}
+                          >
+                            Mark paid
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              })}
+              {filteredCommunicationLogs.length === 0 ? (
+                <p className="empty-state">
+                  {filters.communicationSearch
+                    ? 'No sent communications match that search.'
+                    : 'No customer communications have been sent yet.'}
+                </p>
+              ) : null}
             </div>
           </article>
 
@@ -2756,6 +4229,18 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
               This will be sent via the configured cloud{' '}
               {messageComposer.channel === 'email' ? 'email' : 'text'} service.
             </p>
+            {messageComposer.headerDetails?.length ? (
+              <div className="composer-header-grid">
+                <div className="detail-card composer-header-card composer-header-block">
+                  {messageComposer.headerDetails.map((item) => (
+                    <div key={`${item.label}-${item.value}`} className="composer-header-row">
+                      <span>{item.label}</span>
+                      <strong>{item.value}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <label className="full-width">
               To
               <input value={messageComposer.recipient} readOnly />
@@ -2789,6 +4274,203 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
         </div>
       ) : null}
 
+      {appointmentChannelPrompt ? (
+        <div
+          className="composer-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="appointment-channel-title"
+        >
+          <div className="composer-modal channel-prompt-modal">
+            <div className="panel-heading compact">
+              <div>
+                <p className="eyebrow">Appointment</p>
+                <h2 id="appointment-channel-title">Send confirmation</h2>
+              </div>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  setAppointmentChannelPrompt(null)
+                  setStatusText(`Saved appointment for ${appointmentChannelPrompt.customer.name}.`)
+                }}
+              >
+                Skip for now
+              </button>
+            </div>
+            <p className="composer-note">
+              Choose how you want to send the appointment confirmation, then we will open the editable message review.
+            </p>
+            <div className="composer-header-grid">
+              <div className="detail-card composer-header-card composer-header-block">
+                {appointmentCommunicationDetails(
+                  appointmentChannelPrompt.customer,
+                  appointmentChannelPrompt.appointment,
+                ).map((item) => (
+                  <div key={`${item.label}-${item.value}`} className="composer-header-row">
+                    <span>{item.label}</span>
+                    <strong>{item.value}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="button-row">
+              {customerCanUseChannel(appointmentChannelPrompt.customer, 'email') ? (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    openAppointmentConfirmationComposer(
+                      'email',
+                      appointmentChannelPrompt.customer,
+                      appointmentChannelPrompt.appointment,
+                    )
+                    setAppointmentChannelPrompt(null)
+                  }}
+                >
+                  Send by email
+                </button>
+              ) : null}
+              {customerCanUseChannel(appointmentChannelPrompt.customer, 'sms') ? (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    openAppointmentConfirmationComposer(
+                      'sms',
+                      appointmentChannelPrompt.customer,
+                      appointmentChannelPrompt.appointment,
+                    )
+                    setAppointmentChannelPrompt(null)
+                  }}
+                >
+                  Send by text
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {markPaidState ? (
+        <div
+          className="composer-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="mark-paid-title"
+        >
+          <div className="composer-modal mark-paid-modal">
+            <div className="panel-heading compact">
+              <div>
+                <p className="eyebrow">Payment</p>
+                <h2 id="mark-paid-title">Mark appointment paid</h2>
+              </div>
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => setMarkPaidState(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void handleMarkPaid()}
+                  disabled={loading}
+                >
+                  Save payment
+                </button>
+              </div>
+            </div>
+            {(() => {
+              const appointment = appointments.find(
+                (item) => item.id === markPaidState.appointmentId,
+              )
+
+              return appointment ? (
+                <div className="mark-paid-body">
+                  <p className="composer-note">
+                    This will update the appointment to <strong>paid</strong> and store the
+                    selected payment method.
+                  </p>
+                  <div className="detail-grid">
+                    <div className="detail-card">
+                      <span>Customer</span>
+                      <strong>{appointment.customerName}</strong>
+                    </div>
+                    <div className="detail-card">
+                      <span>Appointment</span>
+                      <strong>{fullDate(appointment.appointmentDate)}</strong>
+                    </div>
+                    <div className="detail-card">
+                      <span>Total due</span>
+                      <strong>{currency(totalForAppointment(appointment))}</strong>
+                    </div>
+                  </div>
+                  <label className="full-width">
+                    Payment method
+                    <select
+                      value={markPaidState.paymentMethod}
+                      onChange={(event) =>
+                        setMarkPaidState((current) =>
+                          current
+                            ? {
+                                ...current,
+                                paymentMethod: event.target.value as PaymentMethod,
+                              }
+                            : current,
+                        )
+                      }
+                    >
+                      <option value="cash">Cash</option>
+                      <option value="check">Check</option>
+                      <option value="venmo">Venmo</option>
+                    </select>
+                  </label>
+                </div>
+              ) : null
+            })()}
+          </div>
+        </div>
+      ) : null}
+
+      {confirmDialog ? (
+        <div
+          className="composer-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-dialog-title"
+        >
+          <div className="composer-modal mark-paid-modal">
+            <div className="panel-heading compact">
+              <div>
+                <p className="eyebrow">Confirmation</p>
+                <h2 id="confirm-dialog-title">{confirmDialog.title}</h2>
+              </div>
+            </div>
+            <p className="composer-note">{confirmDialog.message}</p>
+            <div className="button-row">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setConfirmDialog(null)}
+              >
+                No
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => void handleConfirmDialogYes()}
+                disabled={loading}
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {activeTab === 'settings' ? (
         <section className="workspace-grid single">
           <article className="panel">
@@ -2809,12 +4491,32 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                 />
               </label>
               <label>
+                Website
+                <input
+                  placeholder="https://www.primepianos.com"
+                  value={settings.websiteUrl}
+                  onChange={(event) =>
+                    setSettings((current) => ({ ...current, websiteUrl: event.target.value }))
+                  }
+                />
+              </label>
+              <label>
                 Venmo handle
                 <input
                   placeholder="@yourhandle"
                   value={settings.venmoHandle}
                   onChange={(event) =>
                     setSettings((current) => ({ ...current, venmoHandle: event.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                Voice number
+                <input
+                  placeholder="(253) 900-9540"
+                  value={settings.voicePhone}
+                  onChange={(event) =>
+                    setSettings((current) => ({ ...current, voicePhone: event.target.value }))
                   }
                 />
               </label>

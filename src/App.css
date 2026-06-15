@@ -221,6 +221,8 @@
 
 .ghost-button.danger {
   color: #8f2d1e;
+  background: rgba(255, 245, 242, 0.92);
+  border: 1px solid rgba(143, 45, 30, 0.12);
 }
 
 .tab-button:hover,
@@ -263,6 +265,10 @@
 
 .workflow-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.communication-log-panel {
+  grid-column: 1 / -1;
 }
 
 .workspace-grid.single {
@@ -440,12 +446,172 @@
   line-height: 1.25;
 }
 
+.follow-up-card > div:first-child span strong {
+  font-weight: 700;
+  color: #1f1a16;
+}
+
+.follow-up-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.7rem;
+  align-items: start;
+}
+
+.follow-up-actions {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: 0.45rem;
+  justify-content: end;
+  justify-items: end;
+  align-content: start;
+  flex: 0 0 auto;
+}
+
+.follow-up-actions .secondary-button,
+.follow-up-actions .ghost-button {
+  justify-content: center;
+}
+
+.icon-button {
+  min-width: 0;
+  width: 2.35rem;
+  height: 2.35rem;
+  padding: 0.42rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.follow-up-delete-button {
+  grid-column: 2;
+  justify-self: end;
+  border: 1px solid rgba(143, 45, 30, 0.18);
+  color: #8f2d1e;
+}
+
+.follow-up-delete-button:hover {
+  border-color: rgba(143, 45, 30, 0.3);
+}
+
+.danger-icon-button {
+  border: 1px solid rgba(143, 45, 30, 0.18);
+  color: #8f2d1e;
+}
+
+.danger-icon-button:hover {
+  border-color: rgba(143, 45, 30, 0.3);
+}
+
+.inline-link-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workflow-name-link {
+  justify-self: start;
+  font-weight: 700;
+  color: #214c3c;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.16em;
+}
+
+.workflow-name-link:hover {
+  color: #17352b;
+  text-decoration: underline;
+}
+
+.invoice-queue-card {
+  align-items: flex-start;
+}
+
+.workflow-action-stack {
+  display: grid;
+  gap: 0.45rem;
+  flex-shrink: 0;
+}
+
+.workflow-action-row {
+  display: flex;
+  gap: 0.45rem;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.workflow-action-row > .ghost-button,
+.workflow-action-row > .secondary-button,
+.workflow-action-row > .primary-button {
+  min-width: 6.4rem;
+  justify-content: center;
+}
+
+.paid-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.38rem;
+  min-width: 0;
+  padding: 0.28rem 0.55rem 0.28rem 0.32rem;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #7ee35b, #2f972f);
+  color: #fff;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  box-shadow: 0 10px 22px rgba(55, 148, 52, 0.2);
+}
+
+.paid-badge-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.95);
+  color: #2f972f;
+  font-size: 0.8rem;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.communication-log-list {
+  margin-top: 0.35rem;
+}
+
+.communication-log-row > div:first-child {
+  gap: 0.28rem;
+}
+
 .customer-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.35rem 0.8rem;
   align-items: center;
   background: rgba(255, 255, 255, 0.54);
+}
+
+.customer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.customer-card-button {
+  width: 100%;
+  text-align: left;
+}
+
+.customer-row-delete {
+  justify-self: end;
+  flex-shrink: 0;
 }
 
 .customer-card-primary,
@@ -512,14 +678,28 @@
   grid-template-columns: minmax(0, 1.15fr) minmax(10.75rem, 0.9fr) minmax(8rem, auto);
   gap: 0.65rem;
   align-items: center;
-  width: auto;
+  width: 100%;
   min-width: 0;
 }
 
 .service-history-customer,
+.service-history-customer-link,
 .service-history-date,
 .service-history-summary {
   min-width: 0;
+}
+
+.service-history-customer-link {
+  justify-self: start;
+}
+
+.service-history-detail-trigger {
+  grid-column: 2 / 4;
+  display: grid;
+  grid-template-columns: minmax(10.75rem, 0.9fr) minmax(8rem, auto);
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0;
 }
 
 .service-history-date {
@@ -562,27 +742,37 @@
 }
 
 @media (max-width: 760px) {
+  .workflow-action-row > .ghost-button,
+  .workflow-action-row > .secondary-button,
+  .workflow-action-row > .primary-button {
+    min-width: 0;
+  }
+
   .service-history-main {
     grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      'customer date'
-      'summary summary';
     gap: 0.3rem 0.65rem;
     align-items: start;
   }
 
-  .service-history-customer {
-    grid-area: customer;
+  .service-history-customer-link {
+    grid-column: 1 / 2;
+    grid-row: 1 / 2;
+  }
+
+  .service-history-detail-trigger {
+    grid-column: 2 / 3;
+    grid-row: 1 / 2;
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
+    justify-items: end;
   }
 
   .service-history-date {
-    grid-area: date;
     text-align: right;
   }
 
   .service-history-summary {
-    grid-area: summary;
-    text-align: left;
+    text-align: right;
   }
 
   .recent-sales-row {
@@ -606,6 +796,37 @@
   .recent-sales-summary {
     grid-area: summary;
     text-align: left;
+  }
+}
+
+@media (max-width: 500px) {
+  .customer-row {
+    gap: 0.4rem;
+  }
+
+  .invoice-queue-card {
+    flex-direction: column;
+  }
+
+  .invoice-queue-card > div:first-child,
+  .workflow-action-stack,
+  .workflow-action-row {
+    width: 100%;
+  }
+
+  .workflow-action-row {
+    gap: 0.35rem;
+  }
+
+  .follow-up-actions {
+    grid-template-columns: max-content;
+    gap: 0.35rem;
+    justify-content: end;
+    justify-items: end;
+  }
+
+  .follow-up-delete-button {
+    grid-column: auto;
   }
 }
 
@@ -1178,6 +1399,57 @@ textarea {
   color: #645749;
 }
 
+.composer-header-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+}
+
+.composer-header-card {
+  padding: 0.55rem 0.75rem;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: none;
+}
+
+.composer-header-block {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.composer-header-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.4rem;
+  align-items: start;
+  line-height: 1.25;
+}
+
+.composer-header-row span {
+  color: #6a5c4d;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.composer-header-row strong {
+  color: #1f1a16;
+  font-size: 0.95rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.channel-prompt-modal {
+  width: min(100%, 680px);
+}
+
+.mark-paid-modal {
+  width: min(100%, 640px);
+}
+
+.mark-paid-body {
+  display: grid;
+  gap: 0.8rem;
+}
+
 .auth-shell,
 .setup-shell {
   display: grid;
@@ -1216,6 +1488,7 @@ pre {
   .workspace-grid,
   .workflow-grid,
   .form-grid,
+  .composer-header-grid,
   .detail-grid,
   .appointment-summary-grid {
     grid-template-columns: 1fr;
@@ -1364,6 +1637,14 @@ pre {
     grid-template-columns: minmax(0, 1fr);
     gap: 0.2rem;
     align-items: start;
+  }
+
+  .service-history-detail-trigger {
+    grid-column: auto;
+    grid-row: auto;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: start;
+    gap: 0.2rem;
   }
 
   .recent-sales-row {
