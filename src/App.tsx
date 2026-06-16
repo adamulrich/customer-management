@@ -25,6 +25,7 @@ import {
 } from 'date-fns'
 import './App.css'
 import {
+  createAppBackup,
   cancelFollowUp,
   deleteAppointment,
   deleteCustomer,
@@ -41,6 +42,7 @@ import {
   markInvoiceSent,
   markMarketingSent,
   markReminderSent,
+  saveManualCommunicationLog,
   saveAppointment,
   saveCustomer,
   saveSettings,
@@ -70,6 +72,7 @@ const navigation = [
   ['invoices', 'Invoicing'],
   ['followups', 'Follow-ups'],
   ['communications', 'Communication Log'],
+  ['backup', 'Data Backup'],
   ['settings', 'Settings'],
 ] as const
 
@@ -101,8 +104,6 @@ function detailOrigin(tab: TabKey, label?: string): DetailOrigin {
 
 const GOOGLE_REVIEW_LINK = 'https://g.page/r/CUfNAU9Ogl_-EAE/review'
 const STANDARD_APPOINTMENT_TOTAL = 150
-const TRAVEL_TOTAL_UPCHARGE = 25
-const PITCH_RAISE_TOTAL_UPCHARGE = 25
 const REPAIR_AMOUNT_OPTIONS = Array.from({ length: 61 }, (_, index) => index * 5)
 
 function TrashIcon() {
@@ -133,6 +134,11 @@ function defaultAppointmentDateTime() {
   const date = new Date()
   date.setHours(10, 0, 0, 0)
   return format(date, "yyyy-MM-dd'T'HH:mm")
+}
+
+function backupFilename(exportedAt: string) {
+  const compactTimestamp = exportedAt.replace(/[:]/g, '-').replace(/[.].*/, '')
+  return `prime-pianos-backup-${compactTimestamp}.json`
 }
 
 const emptyAppointmentForm = (): AppointmentInput => ({
@@ -203,10 +209,17 @@ function calculateIncludedTaxBreakdown(
   }
 }
 
-function buildAdditionalChargeNote(pitchRaiseIncluded: boolean, repairsAmount: number) {
+function buildAdditionalChargeNote(
+  pitchRaiseIncluded: boolean,
+  voicingIncluded: boolean,
+  repairsAmount: number,
+) {
   const parts: string[] = []
   if (pitchRaiseIncluded) {
     parts.push('Pitch raise')
+  }
+  if (voicingIncluded) {
+    parts.push('Voicing')
   }
   if (repairsAmount > 0) {
     parts.push('Repairs')
@@ -214,34 +227,47 @@ function buildAdditionalChargeNote(pitchRaiseIncluded: boolean, repairsAmount: n
   return parts.join(' + ')
 }
 
-function additionalChargeBreakdown(additionalCharges: number, additionalChargeNote: string) {
+function additionalChargeBreakdown(
+  additionalCharges: number,
+  additionalChargeNote: string,
+  settings: BusinessSettings,
+) {
   const total = roundMoney(Number(additionalCharges || 0))
   const normalizedNote = additionalChargeNote.trim().toLowerCase()
   const hasPitchRaise =
     normalizedNote.includes('pitch raise') || normalizedNote.includes('pitch change')
+  const hasVoicing = normalizedNote.includes('voicing')
   const hasRepairs = normalizedNote.includes('repair')
-  const pitchRaiseCharge = hasPitchRaise ? Math.min(PITCH_RAISE_TOTAL_UPCHARGE, total) : 0
-  const remainder = roundMoney(Math.max(total - pitchRaiseCharge, 0))
+  const pitchRaiseCharge = hasPitchRaise ? Math.min(settings.defaultPitchRaiseCharge, total) : 0
+  const afterPitchRaise = roundMoney(Math.max(total - pitchRaiseCharge, 0))
+  const voicingCharge = hasVoicing ? Math.min(settings.defaultVoicingCharge, afterPitchRaise) : 0
+  const remainder = roundMoney(Math.max(afterPitchRaise - voicingCharge, 0))
   const repairsCharge = hasRepairs ? remainder : 0
   const genericAdditionalCharges =
     hasRepairs ? 0
-    : hasPitchRaise ? remainder
+    : hasPitchRaise || hasVoicing ? remainder
     : total
 
   return {
     pitchRaiseCharge,
+    voicingCharge,
     repairsCharge,
     genericAdditionalCharges,
   }
 }
 
-function appointmentChargeDetails(appointment: AppointmentRecord | AppointmentInput) {
+function appointmentChargeDetails(
+  appointment: AppointmentRecord | AppointmentInput,
+  settings: BusinessSettings,
+) {
   const breakdown = additionalChargeBreakdown(
     appointment.additionalCharges,
     appointment.additionalChargeNote,
+    settings,
   )
   const generatedNote = buildAdditionalChargeNote(
     breakdown.pitchRaiseCharge > 0,
+    breakdown.voicingCharge > 0,
     breakdown.repairsCharge,
   )
   const showCustomNote =
@@ -253,6 +279,9 @@ function appointmentChargeDetails(appointment: AppointmentRecord | AppointmentIn
     { label: 'Travel charge', value: currency(appointment.travelCharge) },
     ...(breakdown.pitchRaiseCharge > 0
       ? [{ label: 'Pitch raise', value: currency(breakdown.pitchRaiseCharge) }]
+      : []),
+    ...(breakdown.voicingCharge > 0
+      ? [{ label: 'Voicing', value: currency(breakdown.voicingCharge) }]
       : []),
     ...(breakdown.repairsCharge > 0
       ? [{ label: 'Repairs', value: currency(breakdown.repairsCharge) }]
@@ -511,6 +540,7 @@ function App() {
   const [appointmentPricingOptions, setAppointmentPricingOptions] = useState({
     travelIncluded: false,
     pitchRaiseIncluded: false,
+    voicingIncluded: false,
     repairsAmount: 0,
   })
   const repairAmountOptions = Array.from(
@@ -772,6 +802,8 @@ function App() {
           if (!customer) {
             return null
           }
+          const meta = metaText(appointment)
+          const [metaLeading, metaTrailing] = meta.split(' • ', 2)
 
           return (
             <div key={appointment.id} className="queue-card invoice-queue-card">
@@ -784,7 +816,10 @@ function App() {
                   {appointment.customerName}
                 </button>
                 <span>{currency(totalForAppointment(appointment))}</span>
-                <span>{metaText(appointment)}</span>
+                <div className="invoice-meta">
+                  <span>{metaLeading}</span>
+                  {metaTrailing ? <span className="invoice-meta-secondary">{metaTrailing}</span> : null}
+                </div>
               </div>
               <div className="workflow-action-stack">
                 {showCommunicationActions ? (
@@ -822,7 +857,7 @@ function App() {
                       openAppointmentDetails(appointment, detailOrigin('invoices', 'invoicing'))
                     }
                   >
-                    Appointment
+                    Appt
                   </button>
                   {appointment.status !== 'paid' ? (
                     <button
@@ -964,6 +999,24 @@ function App() {
       setLoading(false)
     }
   }
+  async function handleBackupDownload() {
+    const backup = await runTask('Preparing backup export...', () => createAppBackup())
+    if (!backup) {
+      return
+    }
+
+    const json = JSON.stringify(backup, null, 2)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = backupFilename(backup.exportedAt)
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    setStatusText(`Backup downloaded: ${backupFilename(backup.exportedAt)}`)
+  }
 
   function openMessageComposer(input: MessageComposerState) {
     setErrorText('')
@@ -1026,7 +1079,10 @@ function App() {
       kind: 'reminder',
       recipient: channel === 'email' ? customer.email : customer.phone,
       subject: 'Time to schedule your next piano tuning',
-      message: reminderText(customer, appointment),
+      message:
+        channel === 'email'
+          ? reminderEmailText(customer, appointment)
+          : reminderSmsText(customer, appointment),
       title: channel === 'email' ? 'Time for your next tuning' : 'Reminder text',
       statusMessage: `Reminder ${channel === 'email' ? 'email' : 'text'} sent to ${customer.name}.`,
     })
@@ -1048,6 +1104,16 @@ function App() {
       title: channel === 'email' ? 'Checking in after your tuning' : 'Follow-up text',
       statusMessage: `Follow-up ${channel === 'email' ? 'email' : 'text'} sent to ${customer.name}.`,
     })
+  }
+
+  function openNativeSmsComposer(recipient: string, message: string) {
+    const to = recipient.trim()
+    if (!to) {
+      throw new Error('A phone number is required to open the messaging app.')
+    }
+
+    const smsUrl = `sms:${encodeURIComponent(to)}?&body=${encodeURIComponent(message)}`
+    window.location.href = smsUrl
   }
 
   function openAppointmentConfirmationComposer(
@@ -1204,13 +1270,26 @@ function App() {
             throw new Error('Marketing blasts can only be sent by email.')
           }
 
-          await sendBusinessSms({
-            to: messageComposer.recipient,
-            body: messageComposer.message,
-            customerId: messageComposer.customerId,
-            appointmentId: messageComposer.appointmentId,
-            kind: messageComposer.kind,
-          })
+          if (messageComposer.kind === 'follow_up') {
+            openNativeSmsComposer(messageComposer.recipient, messageComposer.message)
+            await saveManualCommunicationLog({
+              channel: 'sms',
+              provider: 'device_sms',
+              kind: messageComposer.kind,
+              recipient: messageComposer.recipient,
+              body: messageComposer.message,
+              customerId: messageComposer.customerId,
+              appointmentId: messageComposer.appointmentId,
+            })
+          } else {
+            await sendBusinessSms({
+              to: messageComposer.recipient,
+              body: messageComposer.message,
+              customerId: messageComposer.customerId,
+              appointmentId: messageComposer.appointmentId,
+              kind: messageComposer.kind,
+            })
+          }
         }
 
         if (messageComposer.kind === 'invoice' && messageComposer.appointmentId) {
@@ -1534,11 +1613,19 @@ function App() {
         additionalChargeBreakdown(
           appointment.additionalCharges,
           appointment.additionalChargeNote,
+          settings,
         ).pitchRaiseCharge > 0,
+      voicingIncluded:
+        additionalChargeBreakdown(
+          appointment.additionalCharges,
+          appointment.additionalChargeNote,
+          settings,
+        ).voicingCharge > 0,
       repairsAmount: (() => {
         const breakdown = additionalChargeBreakdown(
           appointment.additionalCharges,
           appointment.additionalChargeNote,
+          settings,
         )
         return breakdown.repairsCharge || breakdown.genericAdditionalCharges
       })(),
@@ -1591,6 +1678,7 @@ function App() {
     setAppointmentPricingOptions({
       travelIncluded: false,
       pitchRaiseIncluded: false,
+      voicingIncluded: false,
       repairsAmount: 0,
     })
     setIsAppointmentFormOpen(false)
@@ -1616,6 +1704,7 @@ function App() {
     setAppointmentPricingOptions({
       travelIncluded: false,
       pitchRaiseIncluded: false,
+      voicingIncluded: false,
       repairsAmount: 0,
     })
     setAppointmentDetailOrigin(origin)
@@ -1636,12 +1725,15 @@ function App() {
   }
 
   function applyFlatFeePricing() {
-    const travelCharge = appointmentPricingOptions.travelIncluded ? TRAVEL_TOTAL_UPCHARGE : 0
+    const travelCharge = appointmentPricingOptions.travelIncluded ? settings.defaultTravelCharge : 0
     const pitchRaiseCharge = appointmentPricingOptions.pitchRaiseIncluded
-      ? PITCH_RAISE_TOTAL_UPCHARGE
+      ? settings.defaultPitchRaiseCharge
+      : 0
+    const voicingCharge = appointmentPricingOptions.voicingIncluded
+      ? settings.defaultVoicingCharge
       : 0
     const repairsCharge = appointmentPricingOptions.repairsAmount
-    const additionalCharges = pitchRaiseCharge + repairsCharge
+    const additionalCharges = pitchRaiseCharge + voicingCharge + repairsCharge
     const total =
       STANDARD_APPOINTMENT_TOTAL +
       travelCharge +
@@ -1660,6 +1752,7 @@ function App() {
       additionalCharges: breakdown.additionalCharges,
       additionalChargeNote: buildAdditionalChargeNote(
         appointmentPricingOptions.pitchRaiseIncluded,
+        appointmentPricingOptions.voicingIncluded,
         appointmentPricingOptions.repairsAmount,
       ),
       taxAmount: breakdown.taxAmount,
@@ -1708,7 +1801,7 @@ function App() {
 
   function invoiceText(appointment: AppointmentRecord) {
     const venmoLink = invoiceVenmoLink(appointment) || 'Add your Venmo handle in Settings to generate a payment link.'
-    const chargeLines = appointmentChargeDetails(appointment).map(
+    const chargeLines = appointmentChargeDetails(appointment, settings).map(
       ({ label, value }) => `${label}: ${value}`,
     )
 
@@ -1720,6 +1813,8 @@ function App() {
       appointment.paymentMethod
         ? `Paid via: ${paymentMethodLabel(appointment.paymentMethod)}`
         : 'Payment options: Cash, Check, Venmo',
+      '',
+      unmonitoredTextNotice(),
       '',
       `Pay with Venmo: ${venmoLink}`,
       `Leave a Google review: ${GOOGLE_REVIEW_LINK}`,
@@ -1751,6 +1846,12 @@ function App() {
       : ''
   }
 
+  function unmonitoredTextNotice() {
+    return settings.voicePhone.trim()
+      ? `This text number is unmonitored. Please contact us at ${settings.voicePhone.trim()} if you need anything.`
+      : 'This text number is unmonitored. Please contact us directly if you need anything.'
+  }
+
   function invoiceEmailText(appointment: AppointmentRecord) {
     return [
       `Hi ${appointment.customerName},`,
@@ -1778,7 +1879,7 @@ function App() {
       { label: 'Date / time', value: fullDate(appointment.appointmentDate) },
       { label: 'Name', value: customer.name },
       { label: 'Address', value: customer.address || 'No address on file' },
-      ...appointmentChargeDetails(appointment),
+      ...appointmentChargeDetails(appointment, settings),
     ]
   }
 
@@ -1861,6 +1962,7 @@ function App() {
       `Address: ${customer.address || 'No address on file'}`,
       `Quoted price: ${currency(totalForAppointment(appointment))}`,
       appointmentChangeNote(),
+      unmonitoredTextNotice(),
       '',
       settings.smsSignature,
     ].join('\n')
@@ -1876,6 +1978,7 @@ function App() {
       `Address: ${customer.address || 'No address on file'}`,
       `Quoted price: ${currency(totalForAppointment(appointment))}`,
       appointmentChangeNote(),
+      unmonitoredTextNotice(),
       '',
       settings.smsSignature,
     ].join('\n')
@@ -2007,7 +2110,7 @@ function App() {
       ${detailTableHtml(
         customer
           ? invoiceComposerDetails(customer, appointment)
-          : appointmentChargeDetails(appointment),
+          : appointmentChargeDetails(appointment, settings),
       )}
       <p style="margin: 0 0 10px; font-size: 16px; line-height: 1.7; color: #2f2923;">
         <strong>${appointment.paymentMethod ? 'Payment method:' : 'Payment options:'}</strong> ${escapeHtml(
@@ -2058,12 +2161,25 @@ function App() {
     })
   }
 
-  function reminderText(customer: CustomerRecord, appointment: AppointmentRecord) {
+  function reminderEmailText(customer: CustomerRecord, appointment: AppointmentRecord) {
     return [
       `Hi ${customer.name},`,
       '',
       `It has been ${differenceInCalendarDays(new Date(), parseISO(appointment.appointmentDate))} days since your last piano tuning on ${shortDate(appointment.appointmentDate)}.`,
       'Would you like to get your next tuning on the calendar?',
+      '',
+      settings.emailSignature,
+    ].join('\n')
+  }
+
+  function reminderSmsText(customer: CustomerRecord, appointment: AppointmentRecord) {
+    return [
+      `Hi ${customer.name},`,
+      '',
+      `It has been ${differenceInCalendarDays(new Date(), parseISO(appointment.appointmentDate))} days since your last piano tuning on ${shortDate(appointment.appointmentDate)}.`,
+      'Would you like to get your next tuning on the calendar?',
+      '',
+      unmonitoredTextNotice(),
       '',
       settings.smsSignature,
     ].join('\n')
@@ -2091,7 +2207,11 @@ function App() {
     ].join('\n')
   }
 
-  function reminderHtml(customer: CustomerRecord, appointment: AppointmentRecord, messageText = reminderText(customer, appointment)) {
+  function reminderHtml(
+    customer: CustomerRecord,
+    appointment: AppointmentRecord,
+    messageText = reminderEmailText(customer, appointment),
+  ) {
     return proseEmailHtml(messageText, {
       eyebrow: settings.businessName,
       title: 'Time for your next tuning',
@@ -3049,9 +3169,14 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     <span>
                       Target total {currency(
                         STANDARD_APPOINTMENT_TOTAL +
-                          (appointmentPricingOptions.travelIncluded ? TRAVEL_TOTAL_UPCHARGE : 0) +
+                          (appointmentPricingOptions.travelIncluded
+                            ? settings.defaultTravelCharge
+                            : 0) +
                           (appointmentPricingOptions.pitchRaiseIncluded
-                            ? PITCH_RAISE_TOTAL_UPCHARGE
+                            ? settings.defaultPitchRaiseCharge
+                            : 0) +
+                          (appointmentPricingOptions.voicingIncluded
+                            ? settings.defaultVoicingCharge
                             : 0) +
                           appointmentPricingOptions.repairsAmount,
                       )}{' '}
@@ -3084,6 +3209,19 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         }
                       />
                       Pitch raise
+                    </label>
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={appointmentPricingOptions.voicingIncluded}
+                        onChange={(event) =>
+                          setAppointmentPricingOptions((current) => ({
+                            ...current,
+                            voicingIncluded: event.target.checked,
+                          }))
+                        }
+                      />
+                      Voicing
                     </label>
                     <label>
                       Repairs
@@ -3146,7 +3284,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   />
                 </label>
                 <label>
-                  Pitch raise + repairs total
+                  Additional services total
                   <input
                     type="number"
                     min="0"
@@ -3165,9 +3303,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   />
                 </label>
                 <label>
-                  Pitch raise / repairs note
+                  Additional services note
                   <input
-                    placeholder="Repair details or notes"
+                    placeholder="Pitch raise, voicing, repair details, or notes"
                     value={appointmentForm.additionalChargeNote}
                     onChange={(event) =>
                       setAppointmentForm((current) => ({
@@ -3241,7 +3379,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
             ) : selectedAppointment ? (
               <div className="detail-card appointment-detail-card">
                 {(() => {
-                  const chargeDetails = appointmentChargeDetails(selectedAppointment)
+                  const chargeDetails = appointmentChargeDetails(selectedAppointment, settings)
                   return (
                 <div className="appointment-summary-grid">
                   <div className="summary-item">
@@ -3408,14 +3546,14 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
       ) : null}
 
       {activeTab === 'invoices' ? (
-        <section className="workflow-grid">
-          <article className="panel">
+        <section className="workflow-grid invoice-view">
+          <article className="panel invoice-panel">
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">Invoicing</p>
                 <h2>Not yet invoiced</h2>
               </div>
-              <span>{uninvoicedAppointments.length} shown</span>
+              <span className="invoice-count">{uninvoicedAppointments.length} shown</span>
             </div>
             {renderInvoiceQueue(
               uninvoicedAppointments,
@@ -3424,13 +3562,13 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
             )}
           </article>
 
-          <article className="panel">
+          <article className="panel invoice-panel">
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">Invoicing</p>
                 <h2>Invoiced, not yet paid</h2>
               </div>
-              <span>{unpaidAppointments.length} shown</span>
+              <span className="invoice-count">{unpaidAppointments.length} shown</span>
             </div>
             {renderInvoiceQueue(
               unpaidAppointments,
@@ -3442,13 +3580,13 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
             )}
           </article>
 
-          <article className="panel">
+          <article className="panel invoice-panel">
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">Invoicing</p>
                 <h2>Paid in the last 2 weeks</h2>
               </div>
-              <span>{recentlyPaidAppointments.length} shown</span>
+              <span className="invoice-count">{recentlyPaidAppointments.length} shown</span>
             </div>
             {renderInvoiceQueue(
               recentlyPaidAppointments,
@@ -3477,7 +3615,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                 const lastReminder = latestAppointmentReminderByAppointmentId.get(appointment.id)
 
                 return (
-                  <div key={appointment.id} className="queue-card">
+                  <div key={appointment.id} className="queue-card follow-up-card">
                     <div>
                       <button
                         type="button"
@@ -3494,14 +3632,14 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                           : 'No reminder sent yet'}
                       </span>
                     </div>
-                    <div className="button-row">
+                    <div className="follow-up-actions">
                       <button
                         className="secondary-button"
                         onClick={() =>
                           openAppointmentDetails(appointment, detailOrigin('followups', 'follow-ups'))
                         }
                       >
-                        Appointment
+                        Appt
                       </button>
                       {customerCanUseChannel(customer, 'email') ? (
                         <button
@@ -3561,7 +3699,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         openAppointmentDetails(lastService, detailOrigin('followups', 'follow-ups'))
                       }
                     >
-                      Appointment
+                      Appt
                     </button>
                     {customerCanUseChannel(customer, 'email') ? (
                       <button
@@ -3731,7 +3869,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                             )
                           }
                         >
-                          Appointment
+                          Appt
                         </button>
                         {appointment.status !== 'paid' ? (
                           <button
@@ -3831,7 +3969,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         className="secondary-button"
                         onClick={() => openAppointmentDetails(appointment)}
                       >
-                        Appointment
+                        Appt
                       </button>
                       {appointment.status !== 'paid' ? (
                         <button
@@ -3892,7 +4030,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         className="secondary-button"
                         onClick={() => openAppointmentDetails(appointment)}
                       >
-                        Appointment
+                        Appt
                       </button>
                       {customerCanUseChannel(customer, 'email') ? (
                         <button
@@ -3950,7 +4088,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                       className="secondary-button"
                       onClick={() => openAppointmentDetails(lastService)}
                     >
-                      Appointment
+                      Appt
                     </button>
                     {customerCanUseChannel(customer, 'email') ? (
                       <button
@@ -4000,7 +4138,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                       className="secondary-button"
                       onClick={() => openAppointmentDetails(appointment)}
                     >
-                      Appointment
+                      Appt
                     </button>
                     {customerCanUseChannel(customer, 'email') ? (
                       <button
@@ -4089,7 +4227,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                           className="secondary-button"
                           onClick={() => openAppointmentDetails(appointment)}
                         >
-                          Appointment
+                          Appt
                         </button>
                         {appointment.status !== 'paid' ? (
                           <button
@@ -4221,13 +4359,16 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   onClick={() => void handleComposerSend()}
                   disabled={loading}
                 >
-                  Send now
+                  {messageComposer.kind === 'follow_up' && messageComposer.channel === 'sms'
+                    ? 'Open Messages'
+                    : 'Send now'}
                 </button>
               </div>
             </div>
             <p className="composer-note">
-              This will be sent via the configured cloud{' '}
-              {messageComposer.channel === 'email' ? 'email' : 'text'} service.
+              {messageComposer.kind === 'follow_up' && messageComposer.channel === 'sms'
+                ? 'This will open the device messaging app so replies come back to the phone instead of the cloud texting service.'
+                : `This will be sent via the configured cloud ${messageComposer.channel === 'email' ? 'email' : 'text'} service.`}
             </p>
             {messageComposer.headerDetails?.length ? (
               <div className="composer-header-grid">
@@ -4521,6 +4662,51 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                 />
               </label>
               <label>
+                Travel charge
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={settings.defaultTravelCharge}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      defaultTravelCharge: Number(event.target.value),
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                Pitch raise charge
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={settings.defaultPitchRaiseCharge}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      defaultPitchRaiseCharge: Number(event.target.value),
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                Voicing charge
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={settings.defaultVoicingCharge}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      defaultVoicingCharge: Number(event.target.value),
+                    }))
+                  }
+                />
+              </label>
+              <label>
                 Default tax rate
                 <input
                   type="number"
@@ -4601,6 +4787,70 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                 Save settings
               </button>
             </form>
+          </article>
+        </section>
+      ) : null}
+
+      {activeTab === 'backup' ? (
+        <section className="workspace-grid single">
+          <article className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Resilience</p>
+                <h2>Data backup</h2>
+              </div>
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void handleBackupDownload()}
+                  disabled={loading}
+                >
+                  Download backup JSON
+                </button>
+              </div>
+            </div>
+            <div className="message-stack">
+              <p className="composer-note">
+                Export a snapshot of your current Back4App data into a versioned JSON file that can
+                be used for disaster recovery or later restore work.
+              </p>
+              <div className="detail-grid">
+                <article className="detail-card backup-summary-card">
+                  <span>Included data</span>
+                  <strong>Customers, appointments, communication log, and settings</strong>
+                </article>
+                <article className="detail-card backup-summary-card">
+                  <span>Export source</span>
+                  <strong>Live Back4App / Parse data</strong>
+                </article>
+                <article className="detail-card backup-summary-card">
+                  <span>Restore UI</span>
+                  <strong>Disabled for safety</strong>
+                </article>
+              </div>
+              <div className="detail-card accent">
+                <h3>Restore is intentionally disabled</h3>
+                <p className="composer-note">
+                  The restore engine exists in the data layer, but the UI is disabled for now so no
+                  one can accidentally overwrite production data. When we enable it later, we should
+                  treat restore as a deliberate admin-only recovery action.
+                </p>
+              </div>
+              <div className="detail-card">
+                <h3>About local backups</h3>
+                <p className="composer-note">
+                  This backup file is an export and restore artifact, not a live offline data store.
+                  The app still runs against Parse today. Switching the app to operate directly from
+                  a local JSON backup would require a separate local persistence mode.
+                </p>
+              </div>
+              <div className="button-row">
+                <button type="button" className="secondary-button" disabled>
+                  Restore from backup
+                </button>
+              </div>
+            </div>
           </article>
         </section>
       ) : null}

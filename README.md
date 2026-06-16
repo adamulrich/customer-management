@@ -2,6 +2,10 @@
 
 A GitHub Pages-hostable PWA for a piano tuning business, backed by Parse/Back4App for secure sign-in and per-user data access.
 
+Architecture documentation:
+
+- [ARCHITECTURE.md](./ARCHITECTURE.md)
+
 ## Features
 
 - Customer CRM with CRUD for name, address, email, phone, reminder preferences, and notes

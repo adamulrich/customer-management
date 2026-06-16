@@ -1,4 +1,5 @@
 import {
+  type AppBackupFile,
   type CommunicationLogRecord,
   type CommunicationKind,
   defaultSettings,
@@ -84,6 +85,50 @@ function makePrivateAcl(user: Parse.User) {
   return acl
 }
 
+async function fetchAllObjects(className: string) {
+  requireUser()
+  const pageSize = 500
+  let skip = 0
+  const results: Parse.Object[] = []
+
+  while (true) {
+    const query = new Parse.Query(className)
+    query.ascending('createdAt')
+    query.limit(pageSize)
+    query.skip(skip)
+    const batch = await query.find()
+    results.push(...batch)
+
+    if (batch.length < pageSize) {
+      break
+    }
+
+    skip += batch.length
+  }
+
+  return results
+}
+
+async function destroyAllObjects(className: string) {
+  let records: Parse.Object[] = []
+
+  try {
+    records = await fetchAllObjects(className)
+  } catch (error) {
+    if (isMissingClassError(error)) {
+      return
+    }
+    throw error
+  }
+
+  for (let index = 0; index < records.length; index += 100) {
+    const batch = records.slice(index, index + 100)
+    if (batch.length > 0) {
+      await Parse.Object.destroyAll(batch)
+    }
+  }
+}
+
 function toIsoString(value?: Date | null) {
   return value ? value.toISOString() : null
 }
@@ -137,6 +182,15 @@ function toSettingsRecord(object: Parse.Object): BusinessSettings {
     websiteUrl: object.get('websiteUrl') ?? defaultSettings.websiteUrl,
     venmoHandle: object.get('venmoHandle') ?? '',
     voicePhone: object.get('voicePhone') ?? defaultSettings.voicePhone,
+    defaultTravelCharge: Number(
+      object.get('defaultTravelCharge') ?? defaultSettings.defaultTravelCharge,
+    ),
+    defaultPitchRaiseCharge: Number(
+      object.get('defaultPitchRaiseCharge') ?? defaultSettings.defaultPitchRaiseCharge,
+    ),
+    defaultVoicingCharge: Number(
+      object.get('defaultVoicingCharge') ?? defaultSettings.defaultVoicingCharge,
+    ),
     defaultTaxRate: Number(object.get('defaultTaxRate') ?? defaultSettings.defaultTaxRate),
     defaultReminderMonths: Number(
       object.get('defaultReminderMonths') ?? defaultSettings.defaultReminderMonths,
@@ -272,6 +326,18 @@ export async function fetchCommunicationLogs() {
   }
 }
 
+async function fetchAllSettingsForBackup() {
+  try {
+    const results = await fetchAllObjects(SETTINGS_CLASS)
+    return results.map(toSettingsRecord)
+  } catch (error) {
+    if (isMissingClassError(error)) {
+      return []
+    }
+    throw error
+  }
+}
+
 export async function saveAppointment(input: AppointmentInput) {
   const user = requireUser()
   const record = input.id
@@ -391,6 +457,9 @@ export async function saveSettings(input: BusinessSettings) {
   record.set('websiteUrl', input.websiteUrl.trim())
   record.set('venmoHandle', input.venmoHandle.trim().replace(/^@/, ''))
   record.set('voicePhone', input.voicePhone.trim())
+  record.set('defaultTravelCharge', input.defaultTravelCharge)
+  record.set('defaultPitchRaiseCharge', input.defaultPitchRaiseCharge)
+  record.set('defaultVoicingCharge', input.defaultVoicingCharge)
   record.set('defaultTaxRate', input.defaultTaxRate)
   record.set('defaultReminderMonths', input.defaultReminderMonths)
   record.set('defaultFollowUpWeeks', input.defaultFollowUpWeeks)
@@ -400,6 +469,182 @@ export async function saveSettings(input: BusinessSettings) {
 
   const saved = await record.save()
   return toSettingsRecord(saved)
+}
+
+export async function createAppBackup(): Promise<AppBackupFile> {
+  const [customers, appointments, communicationLogs, settings] = await Promise.all([
+    fetchCustomers(),
+    fetchAppointments(),
+    fetchCommunicationLogs(),
+    fetchAllSettingsForBackup(),
+  ])
+
+  return {
+    format: 'prime-pianos-backup',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    source: 'back4app',
+    customers,
+    appointments,
+    communicationLogs,
+    settings,
+  }
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function requireArray<T>(value: unknown, label: string): T[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Backup file is missing a valid ${label} array.`)
+  }
+
+  return value as T[]
+}
+
+export function parseAppBackupFile(contents: string): AppBackupFile {
+  let parsed: unknown
+
+  try {
+    parsed = JSON.parse(contents)
+  } catch {
+    throw new Error('Backup file is not valid JSON.')
+  }
+
+  if (!isObjectRecord(parsed)) {
+    throw new Error('Backup file has an invalid structure.')
+  }
+
+  if (parsed.format !== 'prime-pianos-backup' || parsed.version !== 1) {
+    throw new Error('Backup file format is not supported.')
+  }
+
+  return {
+    format: 'prime-pianos-backup',
+    version: 1,
+    exportedAt: String(parsed.exportedAt ?? ''),
+    source: 'back4app',
+    customers: requireArray<CustomerRecord>(parsed.customers, 'customers'),
+    appointments: requireArray<AppointmentRecord>(parsed.appointments, 'appointments'),
+    communicationLogs: requireArray<CommunicationLogRecord>(
+      parsed.communicationLogs,
+      'communicationLogs',
+    ),
+    settings: requireArray<BusinessSettings>(parsed.settings, 'settings'),
+  }
+}
+
+export async function restoreAppBackup(backup: AppBackupFile) {
+  const user = requireUser()
+  parseAppBackupFile(JSON.stringify(backup))
+
+  await destroyAllObjects('CommunicationLog')
+  await destroyAllObjects('Appointment')
+  await destroyAllObjects(SETTINGS_CLASS)
+  await destroyAllObjects('Customer')
+
+  const customerIdMap = new Map<string, string>()
+  const appointmentIdMap = new Map<string, string>()
+
+  for (const customer of backup.customers) {
+    const record = new Parse.Object('Customer')
+    record.setACL(makePrivateAcl(user))
+    record.set('ownerId', user.id)
+    record.set('ownerUsername', user.getUsername())
+    record.set('name', customer.name.trim())
+    record.set('address', customer.address.trim())
+    record.set('email', customer.email.trim())
+    record.set('phone', customer.phone.trim())
+    record.set('contactPreference', customer.contactPreference || '')
+    record.set('reminderOptIn', customer.reminderOptIn)
+    record.set('reminderMonths', customer.reminderMonths)
+    record.set('followUpWeeks', customer.followUpWeeks)
+    record.set('marketingOptIn', customer.marketingOptIn)
+    record.set('notes', customer.notes.trim())
+    if (customer.lastReminderSentAt) {
+      record.set('lastReminderSentAt', new Date(customer.lastReminderSentAt))
+    }
+    if (customer.lastMarketingSentAt) {
+      record.set('lastMarketingSentAt', new Date(customer.lastMarketingSentAt))
+    }
+    const saved = await record.save()
+    if (!saved.id) {
+      throw new Error('Customer restore failed to return a new object id.')
+    }
+    customerIdMap.set(customer.id, saved.id)
+  }
+
+  for (const appointment of backup.appointments) {
+    const record = new Parse.Object('Appointment')
+    record.setACL(makePrivateAcl(user))
+    record.set('ownerId', user.id)
+    record.set('ownerUsername', user.getUsername())
+    record.set('customerId', customerIdMap.get(appointment.customerId) ?? appointment.customerId)
+    record.set('customerName', appointment.customerName.trim())
+    record.set('appointmentDate', new Date(appointment.appointmentDate))
+    record.set('quotedEstimate', appointment.quotedEstimate)
+    record.set('basePrice', appointment.quotedEstimate)
+    record.set('travelCharge', appointment.travelCharge)
+    record.set('additionalCharges', appointment.additionalCharges)
+    record.set('additionalChargeNote', appointment.additionalChargeNote.trim())
+    record.set('taxAmount', appointment.taxAmount)
+    record.set('paymentMethod', appointment.paymentMethod)
+    record.set('notes', appointment.notes.trim())
+    record.set('status', appointment.status)
+    if (appointment.invoiceSentAt) {
+      record.set('invoiceSentAt', new Date(appointment.invoiceSentAt))
+    }
+    if (appointment.followUpSentAt) {
+      record.set('followUpSentAt', new Date(appointment.followUpSentAt))
+    }
+    if (appointment.followUpCancelledAt) {
+      record.set('followUpCancelledAt', new Date(appointment.followUpCancelledAt))
+    }
+    const saved = await record.save()
+    if (!saved.id) {
+      throw new Error('Appointment restore failed to return a new object id.')
+    }
+    appointmentIdMap.set(appointment.id, saved.id)
+  }
+
+  for (const item of backup.communicationLogs) {
+    const record = new Parse.Object('CommunicationLog')
+    record.setACL(makePrivateAcl(user))
+    record.set('ownerId', user.id)
+    record.set('ownerUsername', user.getUsername())
+    record.set('channel', item.channel)
+    record.set('provider', item.provider)
+    record.set('kind', item.kind)
+    record.set('recipient', item.recipient)
+    record.set('subject', item.subject)
+    record.set('body', item.body)
+    record.set('customerId', customerIdMap.get(item.customerId) ?? item.customerId)
+    record.set('appointmentId', appointmentIdMap.get(item.appointmentId) ?? item.appointmentId)
+    record.set('providerMessageId', item.providerMessageId)
+    await record.save()
+  }
+
+  for (const settings of backup.settings) {
+    const record = new Parse.Object(SETTINGS_CLASS)
+    record.setACL(makePrivateAcl(user))
+    record.set('ownerId', user.id)
+    record.set('ownerUsername', user.getUsername())
+    record.set('businessName', settings.businessName.trim())
+    record.set('websiteUrl', settings.websiteUrl.trim())
+    record.set('venmoHandle', settings.venmoHandle.trim().replace(/^@/, ''))
+    record.set('voicePhone', settings.voicePhone.trim())
+    record.set('defaultTravelCharge', settings.defaultTravelCharge)
+    record.set('defaultPitchRaiseCharge', settings.defaultPitchRaiseCharge)
+    record.set('defaultVoicingCharge', settings.defaultVoicingCharge)
+    record.set('defaultTaxRate', settings.defaultTaxRate)
+    record.set('defaultReminderMonths', settings.defaultReminderMonths)
+    record.set('defaultFollowUpWeeks', settings.defaultFollowUpWeeks)
+    record.set('marketingExcludeMonths', settings.marketingExcludeMonths)
+    record.set('emailSignature', settings.emailSignature.trim())
+    record.set('smsSignature', settings.smsSignature.trim())
+    await record.save()
+  }
 }
 
 type EmailPayload = {
@@ -428,6 +673,18 @@ type MarketingPayload = {
   customerIds: string[]
 }
 
+type ManualCommunicationLogPayload = {
+  channel: CommunicationLogRecord['channel']
+  provider: string
+  kind: CommunicationKind
+  recipient: string
+  subject?: string
+  body: string
+  customerId?: string
+  appointmentId?: string
+  providerMessageId?: string
+}
+
 export async function sendBusinessEmail(payload: EmailPayload) {
   requireUser()
   return Parse.Cloud.run('sendBusinessEmail', payload)
@@ -441,4 +698,23 @@ export async function sendBusinessSms(payload: SmsPayload) {
 export async function sendMarketingBlast(payload: MarketingPayload) {
   requireUser()
   return Parse.Cloud.run('sendMarketingBlast', payload)
+}
+
+export async function saveManualCommunicationLog(payload: ManualCommunicationLogPayload) {
+  const user = requireUser()
+  const record = new Parse.Object('CommunicationLog')
+  record.setACL(makePrivateAcl(user))
+  record.set('ownerId', user.id)
+  record.set('ownerUsername', user.getUsername())
+  record.set('channel', payload.channel)
+  record.set('provider', payload.provider)
+  record.set('kind', payload.kind)
+  record.set('recipient', payload.recipient)
+  record.set('subject', payload.subject ?? '')
+  record.set('body', payload.body)
+  record.set('customerId', payload.customerId ?? '')
+  record.set('appointmentId', payload.appointmentId ?? '')
+  record.set('providerMessageId', payload.providerMessageId ?? '')
+  const saved = await record.save()
+  return toCommunicationLogRecord(saved)
 }

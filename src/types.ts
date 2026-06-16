@@ -59,6 +59,9 @@ export type BusinessSettings = {
   websiteUrl: string
   venmoHandle: string
   voicePhone: string
+  defaultTravelCharge: number
+  defaultPitchRaiseCharge: number
+  defaultVoicingCharge: number
   defaultTaxRate: number
   defaultReminderMonths: number
   defaultFollowUpWeeks: number
@@ -91,11 +94,25 @@ export type CommunicationLogRecord = {
   updatedAt: string
 }
 
+export type AppBackupFile = {
+  format: 'prime-pianos-backup'
+  version: 1
+  exportedAt: string
+  source: 'back4app'
+  customers: CustomerRecord[]
+  appointments: AppointmentRecord[]
+  communicationLogs: CommunicationLogRecord[]
+  settings: BusinessSettings[]
+}
+
 export const defaultSettings: BusinessSettings = {
   businessName: 'Pitch Ledger Piano Tuning',
   websiteUrl: 'https://www.primepianos.com',
   venmoHandle: '',
   voicePhone: '(253) 900-9540',
+  defaultTravelCharge: 25,
+  defaultPitchRaiseCharge: 25,
+  defaultVoicingCharge: 100,
   defaultTaxRate: 0.0825,
   defaultReminderMonths: 6,
   defaultFollowUpWeeks: 2,

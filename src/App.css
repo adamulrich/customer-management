@@ -531,10 +531,63 @@
   align-items: flex-start;
 }
 
+.invoice-panel .panel-heading h2 {
+  font-size: clamp(1.35rem, 3.6vw, 2rem);
+  line-height: 1.08;
+}
+
+.invoice-panel .eyebrow {
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+}
+
+.invoice-count {
+  font-size: 0.95rem;
+  color: #514638;
+}
+
+.invoice-view .invoice-queue-card > div:first-child {
+  gap: 0.14rem;
+}
+
+.invoice-view .invoice-queue-card .workflow-name-link {
+  font-size: 0.93rem;
+}
+
+.invoice-view .invoice-queue-card > div:first-child span {
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+.invoice-meta {
+  display: flex;
+  gap: 0.32rem;
+  flex-wrap: wrap;
+  color: #514638;
+  line-height: 1.2;
+}
+
+.invoice-meta-secondary {
+  white-space: nowrap;
+}
+
+.invoice-view .workflow-action-row > .secondary-button,
+.invoice-view .workflow-action-row > .ghost-button,
+.invoice-view .workflow-action-row > .primary-button {
+  min-width: 0;
+  padding: 0.38rem 0.6rem;
+  font-size: 0.92rem;
+}
+
 .workflow-action-stack {
   display: grid;
   gap: 0.45rem;
   flex-shrink: 0;
+}
+
+.invoice-view .workflow-action-stack {
+  align-content: start;
+  justify-items: start;
 }
 
 .workflow-action-row {
@@ -542,6 +595,21 @@
   gap: 0.45rem;
   justify-content: flex-start;
   flex-wrap: wrap;
+}
+
+.invoice-view .workflow-action-row-primary,
+.invoice-view .workflow-action-row-secondary {
+  display: grid;
+  gap: 0.35rem;
+  justify-content: start;
+}
+
+.invoice-view .workflow-action-row-primary {
+  grid-template-columns: repeat(3, max-content);
+}
+
+.invoice-view .workflow-action-row-secondary {
+  grid-template-columns: repeat(2, max-content);
 }
 
 .workflow-action-row > .ghost-button,
@@ -561,6 +629,7 @@
   border-radius: 14px;
   background: linear-gradient(135deg, #7ee35b, #2f972f);
   color: #fff;
+  font-size: 0.78rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -576,7 +645,7 @@
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.95);
   color: #2f972f;
-  font-size: 0.8rem;
+  font-size: 0.7rem;
   line-height: 1;
   font-weight: 900;
 }
@@ -804,18 +873,77 @@
     gap: 0.4rem;
   }
 
-  .invoice-queue-card {
-    flex-direction: column;
-  }
-
-  .invoice-queue-card > div:first-child,
-  .workflow-action-stack,
-  .workflow-action-row {
-    width: 100%;
-  }
-
-  .workflow-action-row {
+  .invoice-panel .panel-heading {
+    align-items: start;
     gap: 0.35rem;
+  }
+
+  .invoice-panel .panel-heading > div {
+    min-width: 0;
+  }
+
+  .invoice-panel .panel-heading h2 {
+    font-size: 1.18rem;
+    line-height: 1.12;
+  }
+
+  .invoice-count {
+    width: 100%;
+    font-size: 0.88rem;
+  }
+
+  .invoice-queue-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.55rem;
+    align-items: start;
+  }
+
+  .invoice-view .invoice-queue-card > div:first-child {
+    width: auto;
+  }
+
+  .invoice-view .invoice-meta {
+    display: grid;
+    gap: 0.08rem;
+  }
+
+  .invoice-view .invoice-meta-secondary {
+    white-space: normal;
+  }
+
+  .invoice-view .workflow-action-stack {
+    width: auto;
+    gap: 0.35rem;
+  }
+
+  .invoice-view .workflow-action-row {
+    width: auto;
+  }
+
+  .invoice-view .workflow-action-row > .ghost-button,
+  .invoice-view .workflow-action-row > .secondary-button,
+  .invoice-view .workflow-action-row > .primary-button,
+  .invoice-view .paid-badge {
+    min-width: 0;
+  }
+
+  .invoice-view .workflow-action-row > .secondary-button,
+  .invoice-view .workflow-action-row > .ghost-button,
+  .invoice-view .workflow-action-row > .primary-button {
+    padding: 0.3rem 0.48rem;
+    font-size: 0.8rem;
+  }
+
+  .invoice-view .paid-badge {
+    padding: 0.24rem 0.44rem 0.24rem 0.28rem;
+    font-size: 0.72rem;
+  }
+
+  .invoice-view .paid-badge-check {
+    width: 1rem;
+    height: 1rem;
+    font-size: 0.62rem;
   }
 
   .follow-up-actions {
@@ -1067,6 +1195,16 @@
   display: grid;
   gap: 0.35rem;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.backup-summary-card {
+  display: grid;
+  gap: 0.2rem;
+  align-content: start;
+}
+
+.backup-summary-card span {
+  color: #645749;
 }
 
 .detail-notes {
