@@ -141,6 +141,7 @@ function toCustomerRecord(object: Parse.Object): CustomerRecord {
     email: object.get('email') ?? '',
     phone: object.get('phone') ?? '',
     contactPreference: object.get('contactPreference') ?? '',
+    referralSource: object.get('referralSource') ?? '',
     reminderOptIn: Boolean(object.get('reminderOptIn')),
     reminderMonths: Number(object.get('reminderMonths') ?? defaultSettings.defaultReminderMonths),
     followUpWeeks: Number(object.get('followUpWeeks') ?? defaultSettings.defaultFollowUpWeeks),
@@ -269,6 +270,7 @@ export async function saveCustomer(input: CustomerInput) {
   record.set('email', input.email.trim())
   record.set('phone', input.phone.trim())
   record.set('contactPreference', input.contactPreference || '')
+  record.set('referralSource', input.referralSource || '')
   record.set('reminderOptIn', input.reminderOptIn)
   record.set('reminderMonths', input.reminderMonths)
   record.set('followUpWeeks', input.followUpWeeks)

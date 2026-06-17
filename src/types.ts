@@ -5,6 +5,13 @@ export type CustomerRecord = {
   email: string
   phone: string
   contactPreference: '' | 'email' | 'sms'
+  referralSource:
+    | ''
+    | 'google_search'
+    | 'business_card_at_store'
+    | 'friend_family'
+    | 'social_media'
+    | 'other'
   reminderOptIn: boolean
   reminderMonths: number
   followUpWeeks: number

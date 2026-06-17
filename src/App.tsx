@@ -123,6 +123,7 @@ const emptyCustomerForm = (settings: BusinessSettings): CustomerInput => ({
   email: '',
   phone: '',
   contactPreference: '',
+  referralSource: '',
   reminderOptIn: true,
   reminderMonths: settings.defaultReminderMonths,
   followUpWeeks: settings.defaultFollowUpWeeks,
@@ -428,6 +429,57 @@ function toLocalAppointmentDateTime(value: string) {
   } catch {
     return value.slice(0, 16)
   }
+}
+
+function referralSourceLabel(value: CustomerRecord['referralSource']) {
+  switch (value) {
+    case 'google_search':
+      return 'Google search'
+    case 'business_card_at_store':
+      return 'Business card at store'
+    case 'friend_family':
+      return 'Friend/family'
+    case 'social_media':
+      return 'Social media'
+    case 'other':
+      return 'Other'
+    default:
+      return 'Not recorded'
+  }
+}
+
+const referralSourceOrder: Array<Exclude<CustomerRecord['referralSource'], ''>> = [
+  'google_search',
+  'business_card_at_store',
+  'friend_family',
+  'social_media',
+  'other',
+]
+
+const referralSourceColors: Record<Exclude<CustomerRecord['referralSource'], ''>, string> = {
+  google_search: '#214c3c',
+  business_card_at_store: '#7d5e35',
+  friend_family: '#c77f2f',
+  social_media: '#6b8e5f',
+  other: '#8a6d8f',
+}
+
+function pieChartSegmentPath(
+  centerX: number,
+  centerY: number,
+  radius: number,
+  startAngle: number,
+  endAngle: number,
+) {
+  const startRadians = (startAngle - 90) * (Math.PI / 180)
+  const endRadians = (endAngle - 90) * (Math.PI / 180)
+  const x1 = centerX + radius * Math.cos(startRadians)
+  const y1 = centerY + radius * Math.sin(startRadians)
+  const x2 = centerX + radius * Math.cos(endRadians)
+  const y2 = centerY + radius * Math.sin(endRadians)
+  const largeArcFlag = endAngle - startAngle > 180 ? 1 : 0
+
+  return `M ${centerX} ${centerY} L ${x1} ${y1} A ${radius} ${radius} 0 ${largeArcFlag} 1 ${x2} ${y2} Z`
 }
 
 function formatHourOption(hour24: number) {
@@ -945,6 +997,19 @@ function App() {
         }
     }
   })()
+  const recordedReferralCounts = referralSourceOrder
+    .map((source) => ({
+      key: source,
+      label: referralSourceLabel(source),
+      count: customers.filter((customer) => customer.referralSource === source).length,
+      color: referralSourceColors[source],
+    }))
+    .filter((item) => item.count > 0)
+  const unrecordedReferralCount = customers.filter((customer) => !customer.referralSource).length
+  const totalRecordedReferralCount = recordedReferralCounts.reduce(
+    (sum, item) => sum + item.count,
+    0,
+  )
   const periodAppointments =
     reportRange.start && reportRange.end
       ? completedAppointments.filter((appointment) => {
@@ -1594,6 +1659,7 @@ function App() {
       email: customer.email,
       phone: customer.phone,
       contactPreference: customer.contactPreference,
+      referralSource: customer.referralSource,
       reminderOptIn: customer.reminderOptIn,
       reminderMonths: customer.reminderMonths,
       followUpWeeks: customer.followUpWeeks,
@@ -2444,6 +2510,25 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   </select>
                 </label>
                 <label>
+                  Heard about us
+                  <select
+                    value={customerForm.referralSource}
+                    onChange={(event) =>
+                      setCustomerForm((current) => ({
+                        ...current,
+                        referralSource: event.target.value as CustomerRecord['referralSource'],
+                      }))
+                    }
+                  >
+                    <option value="">Not recorded</option>
+                    <option value="google_search">Google search</option>
+                    <option value="business_card_at_store">Business card at store</option>
+                    <option value="friend_family">Friend/family</option>
+                    <option value="social_media">Social media</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <label>
                   Reminder months
                   <input
                     type="number"
@@ -2577,6 +2662,10 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   <div className="summary-item">
                     <span>Contact preference</span>
                     <strong>{contactPreferenceLabel(selectedVisibleCustomer.contactPreference)}</strong>
+                  </div>
+                  <div className="summary-item">
+                    <span>Heard about us</span>
+                    <strong>{referralSourceLabel(selectedVisibleCustomer.referralSource)}</strong>
                   </div>
                   <div className="summary-item full-span">
                     <span>Address</span>
@@ -2812,6 +2901,87 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   <p className="empty-state">No completed appointments are recorded yet.</p>
                 ) : null}
               </div>
+            </article>
+
+            <article className="panel referral-report-panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">Customers</p>
+                  <h2>How customers heard about us</h2>
+                </div>
+                <span>
+                  {totalRecordedReferralCount} recorded
+                  {unrecordedReferralCount ? ` • ${unrecordedReferralCount} not recorded` : ''}
+                </span>
+              </div>
+              {totalRecordedReferralCount > 0 ? (
+                <div className="referral-report-layout">
+                  <div className="referral-chart-wrap" aria-hidden="true">
+                    <svg
+                      viewBox="0 0 240 240"
+                      className="referral-chart"
+                      role="img"
+                      aria-label="Pie chart showing how customers heard about Prime Pianos"
+                    >
+                      {recordedReferralCounts.length === 1 ? (
+                        <circle
+                          cx="120"
+                          cy="120"
+                          r="92"
+                          fill={recordedReferralCounts[0].color}
+                        />
+                      ) : (
+                        recordedReferralCounts.map((item, index) => {
+                          const previousCount = recordedReferralCounts
+                            .slice(0, index)
+                            .reduce((sum, current) => sum + current.count, 0)
+                          const startAngle = (previousCount / totalRecordedReferralCount) * 360
+                          const endAngle =
+                            ((previousCount + item.count) / totalRecordedReferralCount) * 360
+
+                          return (
+                            <path
+                              key={item.key}
+                              d={pieChartSegmentPath(120, 120, 92, startAngle, endAngle)}
+                              fill={item.color}
+                              stroke="#f8f4ec"
+                              strokeWidth="3"
+                            />
+                          )
+                        })
+                      )}
+                    </svg>
+                  </div>
+                  <div className="referral-legend">
+                    {recordedReferralCounts.map((item) => {
+                      const share = (item.count / totalRecordedReferralCount) * 100
+                      return (
+                        <div key={item.key} className="referral-legend-row">
+                          <span
+                            className="referral-legend-swatch"
+                            style={{ backgroundColor: item.color }}
+                            aria-hidden="true"
+                          ></span>
+                          <span className="referral-legend-label">{item.label}</span>
+                          <span className="referral-legend-value">
+                            {item.count} • {share.toFixed(0)}%
+                          </span>
+                        </div>
+                      )
+                    })}
+                    {unrecordedReferralCount > 0 ? (
+                      <p className="referral-report-note">
+                        {unrecordedReferralCount} customer
+                        {unrecordedReferralCount === 1 ? '' : 's'} still need a referral source.
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              ) : (
+                <p className="empty-state">
+                  No referral-source data has been recorded yet.
+                </p>
+              )}
             </article>
           </section>
         </>
