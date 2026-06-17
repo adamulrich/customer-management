@@ -155,6 +155,23 @@ const emptyAppointmentForm = (): AppointmentInput => ({
   status: 'scheduled',
 })
 
+function appointmentRecordToForm(appointment: AppointmentRecord): AppointmentInput {
+  return {
+    id: appointment.id,
+    customerId: appointment.customerId,
+    customerName: appointment.customerName,
+    appointmentDate: toLocalAppointmentDateTime(appointment.appointmentDate),
+    quotedEstimate: appointment.quotedEstimate,
+    travelCharge: appointment.travelCharge,
+    additionalCharges: appointment.additionalCharges,
+    additionalChargeNote: appointment.additionalChargeNote,
+    taxAmount: appointment.taxAmount,
+    paymentMethod: appointment.paymentMethod,
+    notes: appointment.notes,
+    status: appointment.status,
+  }
+}
+
 function currency(value: number) {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -403,6 +420,14 @@ function buildAppointmentDateTime(datePart: string, hour24: number, minute: numb
   const safeHour = String(hour24).padStart(2, '0')
   const safeMinute = String(minute).padStart(2, '0')
   return `${datePart}T${safeHour}:${safeMinute}`
+}
+
+function toLocalAppointmentDateTime(value: string) {
+  try {
+    return format(parseISO(value), "yyyy-MM-dd'T'HH:mm")
+  } catch {
+    return value.slice(0, 16)
+  }
 }
 
 function formatHourOption(hour24: number) {
@@ -1340,7 +1365,7 @@ function App() {
         id: appointment.id,
         customerId: appointment.customerId,
         customerName: appointment.customerName,
-        appointmentDate: appointment.appointmentDate.slice(0, 16),
+        appointmentDate: toLocalAppointmentDateTime(appointment.appointmentDate),
         quotedEstimate: appointment.quotedEstimate,
         travelCharge: appointment.travelCharge,
         additionalCharges: appointment.additionalCharges,
@@ -1427,20 +1452,7 @@ function App() {
     const saved = await runTask('Saving appointment…', () => saveAppointment(payload))
     if (saved) {
       await refreshData()
-      setAppointmentForm({
-        id: saved.id,
-        customerId: saved.customerId,
-        customerName: saved.customerName,
-        appointmentDate: saved.appointmentDate.slice(0, 16),
-        quotedEstimate: saved.quotedEstimate,
-        travelCharge: saved.travelCharge,
-        additionalCharges: saved.additionalCharges,
-        additionalChargeNote: saved.additionalChargeNote,
-        taxAmount: saved.taxAmount,
-        paymentMethod: saved.paymentMethod,
-        notes: saved.notes,
-        status: saved.status,
-      })
+      setAppointmentForm(appointmentRecordToForm(saved))
       setSelectedAppointmentId(saved.id)
       setIsAppointmentFormOpen(true)
       setIsAppointmentEditing(false)
@@ -1593,20 +1605,7 @@ function App() {
   }
 
   function loadAppointmentIntoForm(appointment: AppointmentRecord) {
-    setAppointmentForm({
-      id: appointment.id,
-      customerId: appointment.customerId,
-      customerName: appointment.customerName,
-      appointmentDate: appointment.appointmentDate.slice(0, 16),
-      quotedEstimate: appointment.quotedEstimate,
-      travelCharge: appointment.travelCharge,
-      additionalCharges: appointment.additionalCharges,
-      additionalChargeNote: appointment.additionalChargeNote,
-      taxAmount: appointment.taxAmount,
-      paymentMethod: appointment.paymentMethod,
-      notes: appointment.notes,
-      status: appointment.status,
-    })
+    setAppointmentForm(appointmentRecordToForm(appointment))
     setAppointmentPricingOptions({
       travelIncluded: appointment.travelCharge > 0,
       pitchRaiseIncluded:
