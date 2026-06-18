@@ -131,12 +131,6 @@ const emptyCustomerForm = (settings: BusinessSettings): CustomerInput => ({
   notes: '',
 })
 
-function defaultAppointmentDateTime() {
-  const date = new Date()
-  date.setHours(10, 0, 0, 0)
-  return format(date, "yyyy-MM-dd'T'HH:mm")
-}
-
 function backupFilename(exportedAt: string) {
   const compactTimestamp = exportedAt.replace(/[:]/g, '-').replace(/[.].*/, '')
   return `prime-pianos-backup-${compactTimestamp}.json`
@@ -145,7 +139,7 @@ function backupFilename(exportedAt: string) {
 const emptyAppointmentForm = (): AppointmentInput => ({
   customerId: '',
   customerName: '',
-  appointmentDate: defaultAppointmentDateTime(),
+  appointmentDate: '',
   quotedEstimate: 0,
   travelCharge: 0,
   additionalCharges: 0,
@@ -405,7 +399,7 @@ function calendarEventClass(status: AppointmentStatus) {
 }
 
 function parseAppointmentDateTime(value: string) {
-  const [datePart = format(new Date(), 'yyyy-MM-dd'), timePart = '10:00'] = value.split('T')
+  const [datePart = '', timePart = '10:00'] = value.split('T')
   const [rawHour = '10', rawMinute = '00'] = timePart.split(':')
   const hour24 = Number(rawHour)
   const minute = Number(rawMinute)
@@ -1505,6 +1499,10 @@ function App() {
     const selected = customerMap.get(appointmentForm.customerId)
     if (!selected) {
       setErrorText('Choose a customer before saving the appointment.')
+      return
+    }
+    if (!parseAppointmentDateTime(appointmentForm.appointmentDate).datePart) {
+      setErrorText('Choose an appointment date before saving the appointment.')
       return
     }
     const isNewAppointment = !appointmentForm.id

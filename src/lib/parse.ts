@@ -133,6 +133,19 @@ function toIsoString(value?: Date | null) {
   return value ? value.toISOString() : null
 }
 
+function toAppointmentDateString(value: unknown) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString()
+  }
+
+  if (typeof value === 'string') {
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString()
+  }
+
+  return ''
+}
+
 function toCustomerRecord(object: Parse.Object): CustomerRecord {
   return {
     id: object.id ?? '',
@@ -159,7 +172,7 @@ function toAppointmentRecord(object: Parse.Object): AppointmentRecord {
     id: object.id ?? '',
     customerId: object.get('customerId') ?? '',
     customerName: object.get('customerName') ?? '',
-    appointmentDate: object.get('appointmentDate')?.toISOString() ?? new Date().toISOString(),
+    appointmentDate: toAppointmentDateString(object.get('appointmentDate')),
     quotedEstimate: Number(object.get('quotedEstimate') ?? object.get('basePrice') ?? 0),
     travelCharge: Number(object.get('travelCharge') ?? 0),
     additionalCharges: Number(object.get('additionalCharges') ?? 0),
@@ -345,6 +358,11 @@ export async function saveAppointment(input: AppointmentInput) {
   const record = input.id
     ? await new Parse.Query('Appointment').get(input.id)
     : new Parse.Object('Appointment')
+  const appointmentDate = new Date(input.appointmentDate)
+
+  if (Number.isNaN(appointmentDate.getTime())) {
+    throw new Error('Appointment date is required.')
+  }
 
   if (!input.id) {
     record.setACL(makePrivateAcl(user))
@@ -354,7 +372,7 @@ export async function saveAppointment(input: AppointmentInput) {
   record.set('ownerUsername', user.getUsername())
   record.set('customerId', input.customerId)
   record.set('customerName', input.customerName.trim())
-  record.set('appointmentDate', new Date(input.appointmentDate))
+  record.set('appointmentDate', appointmentDate)
   record.set('quotedEstimate', input.quotedEstimate)
   record.set('basePrice', input.quotedEstimate)
   record.set('travelCharge', input.travelCharge)
