@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "bootstrap:user": "node --env-file=.env.local scripts/bootstrap-user.mjs"
+    "bootstrap:user": "node --env-file=.env.local scripts/bootstrap-user.mjs",
+    "audit:appointments": "node --env-file=.env.local scripts/audit-appointments.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
