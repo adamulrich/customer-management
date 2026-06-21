@@ -28,8 +28,10 @@ import {
   createAppBackup,
   cancelFollowUp,
   deleteAppointment,
+  deleteBlockedDate,
   deleteCustomer,
   fetchAppointments,
+  fetchBlockedDates,
   fetchCommunicationLogs,
   fetchCustomers,
   fetchSettings,
@@ -44,6 +46,7 @@ import {
   markReminderSent,
   saveManualCommunicationLog,
   saveAppointment,
+  saveBlockedDate,
   saveCustomer,
   saveSettings,
   sendBusinessEmail,
@@ -57,6 +60,8 @@ import {
   defaultSettings,
   type AppointmentInput,
   type AppointmentRecord,
+  type BlockedDateInput,
+  type BlockedDateRecord,
   type PaymentMethod,
   type AppointmentStatus,
   type BusinessSettings,
@@ -140,6 +145,7 @@ const emptyAppointmentForm = (): AppointmentInput => ({
   customerId: '',
   customerName: '',
   appointmentDate: '',
+  noCharge: false,
   quotedEstimate: 0,
   travelCharge: 0,
   additionalCharges: 0,
@@ -156,6 +162,7 @@ function appointmentRecordToForm(appointment: AppointmentRecord): AppointmentInp
     customerId: appointment.customerId,
     customerName: appointment.customerName,
     appointmentDate: toLocalAppointmentDateTime(appointment.appointmentDate),
+    noCharge: appointment.noCharge,
     quotedEstimate: appointment.quotedEstimate,
     travelCharge: appointment.travelCharge,
     additionalCharges: appointment.additionalCharges,
@@ -166,6 +173,12 @@ function appointmentRecordToForm(appointment: AppointmentRecord): AppointmentInp
     status: appointment.status,
   }
 }
+
+const emptyBlockedDateForm = (): BlockedDateInput => ({
+  startDate: '',
+  endDate: '',
+  reason: '',
+})
 
 function currency(value: number) {
   return new Intl.NumberFormat('en-US', {
@@ -179,12 +192,32 @@ function percent(value: number) {
 }
 
 function totalForAppointment(appointment: AppointmentRecord | AppointmentInput) {
+  if (appointment.noCharge) {
+    return 0
+  }
+
   return (
     Number(appointment.quotedEstimate || 0) +
     Number(appointment.travelCharge || 0) +
     Number(appointment.additionalCharges || 0) +
     Number(appointment.taxAmount || 0)
   )
+}
+
+function taxableSubtotalForAppointment(appointment: AppointmentRecord | AppointmentInput) {
+  if (appointment.noCharge) {
+    return 0
+  }
+
+  return (
+    Number(appointment.quotedEstimate || 0) +
+    Number(appointment.travelCharge || 0) +
+    Number(appointment.additionalCharges || 0)
+  )
+}
+
+function taxForAppointment(appointment: AppointmentRecord | AppointmentInput) {
+  return appointment.noCharge ? 0 : Number(appointment.taxAmount || 0)
 }
 
 function roundMoney(value: number) {
@@ -272,6 +305,13 @@ function appointmentChargeDetails(
   appointment: AppointmentRecord | AppointmentInput,
   settings: BusinessSettings,
 ) {
+  if (appointment.noCharge) {
+    return [
+      { label: 'No charge', value: 'Yes' },
+      { label: 'Total', value: currency(0) },
+    ]
+  }
+
   const breakdown = additionalChargeBreakdown(
     appointment.additionalCharges,
     appointment.additionalChargeNote,
@@ -417,6 +457,11 @@ function buildAppointmentDateTime(datePart: string, hour24: number, minute: numb
   return `${datePart}T${safeHour}:${safeMinute}`
 }
 
+function dateOnlyRangeIncludes(dayKey: string, startDate: string, endDate: string) {
+  const safeEndDate = endDate || startDate
+  return dayKey >= startDate && dayKey <= safeEndDate
+}
+
 function toLocalAppointmentDateTime(value: string) {
   try {
     return format(parseISO(value), "yyyy-MM-dd'T'HH:mm")
@@ -499,12 +544,8 @@ function quartersFromAppointments(appointments: AppointmentRecord[]) {
 
     return {
       label: `Q${Math.floor(start.getMonth() / 3) + 1} ${format(start, 'yyyy')}`,
-      sales: items.reduce(
-        (sum, item) =>
-          sum + item.quotedEstimate + item.travelCharge + item.additionalCharges,
-        0,
-      ),
-      tax: items.reduce((sum, item) => sum + item.taxAmount, 0),
+      sales: items.reduce((sum, item) => sum + taxableSubtotalForAppointment(item), 0),
+      tax: items.reduce((sum, item) => sum + taxForAppointment(item), 0),
       count: items.length,
     }
   })
@@ -566,6 +607,7 @@ type ConfirmDialogState =
       action:
         | { type: 'delete_customer'; customerId: string }
         | { type: 'delete_appointment'; appointmentId: string }
+        | { type: 'delete_blocked_date'; blockedDateId: string }
         | { type: 'cancel_followup'; appointmentId: string }
     }
 
@@ -576,10 +618,12 @@ function App() {
   const [user, setUser] = useState(() => getCurrentUser())
   const [customers, setCustomers] = useState<CustomerRecord[]>([])
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([])
+  const [blockedDates, setBlockedDates] = useState<BlockedDateRecord[]>([])
   const [communicationLogs, setCommunicationLogs] = useState<CommunicationLogRecord[]>([])
   const [settings, setSettings] = useState<BusinessSettings>(defaultSettings)
   const [customerForm, setCustomerForm] = useState<CustomerInput>(emptyCustomerForm(defaultSettings))
   const [appointmentForm, setAppointmentForm] = useState<AppointmentInput>(emptyAppointmentForm())
+  const [blockedDateForm, setBlockedDateForm] = useState<BlockedDateInput>(emptyBlockedDateForm())
   const [activeTab, setActiveTab] = useState<LegacyTabKey>('customers')
   const [selectedCustomerId, setSelectedCustomerId] = useState('')
   const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()))
@@ -619,15 +663,23 @@ function App() {
   ).sort((left, right) => left - right)
 
   const refreshData = useEffectEvent(async () => {
-    const [nextCustomers, nextAppointments, nextCommunicationLogs, nextSettings] = await Promise.all([
+    const [
+      nextCustomers,
+      nextAppointments,
+      nextBlockedDates,
+      nextCommunicationLogs,
+      nextSettings,
+    ] = await Promise.all([
       fetchCustomers(),
       fetchAppointments(),
+      fetchBlockedDates(),
       fetchCommunicationLogs(),
       fetchSettings(),
     ])
 
     setCustomers(nextCustomers)
     setAppointments(nextAppointments)
+    setBlockedDates(nextBlockedDates)
     setCommunicationLogs(nextCommunicationLogs)
     setSettings(nextSettings)
     setCustomerForm((current) =>
@@ -788,7 +840,7 @@ function App() {
 
   const quarterSummary = quartersFromAppointments(appointments)
   const invoiceReadyAppointments = appointments.filter(
-    (appointment) => appointment.status !== 'scheduled',
+    (appointment) => appointment.status !== 'scheduled' && !appointment.noCharge,
   )
   const invoiceQueueAppointments = invoiceReadyAppointments
   const outstandingInvoices = invoiceReadyAppointments.filter(
@@ -1012,12 +1064,11 @@ function App() {
         })
       : completedAppointments
   const periodSales = periodAppointments.reduce(
-    (sum, appointment) =>
-      sum + appointment.quotedEstimate + appointment.travelCharge + appointment.additionalCharges,
+    (sum, appointment) => sum + taxableSubtotalForAppointment(appointment),
     0,
   )
   const periodTaxCollected = periodAppointments.reduce(
-    (sum, appointment) => sum + appointment.taxAmount,
+    (sum, appointment) => sum + taxForAppointment(appointment),
     0,
   )
   const activeQuarterLabel = quarterSummary.some((quarter) => quarter.label === selectedQuarterLabel)
@@ -1046,6 +1097,19 @@ function App() {
       const key = format(parseISO(appointment.appointmentDate), 'yyyy-MM-dd')
       grouped[key] ??= []
       grouped[key].push(appointment)
+      return grouped
+    },
+    {},
+  )
+  const blockedDatesByDay = calendarDays.reduce<Record<string, BlockedDateRecord[]>>(
+    (grouped, day) => {
+      const key = format(day, 'yyyy-MM-dd')
+      const matches = blockedDates.filter((blockedDate) =>
+        dateOnlyRangeIncludes(key, blockedDate.startDate, blockedDate.endDate),
+      )
+      if (matches.length > 0) {
+        grouped[key] = matches
+      }
       return grouped
     },
     {},
@@ -1425,6 +1489,7 @@ function App() {
         customerId: appointment.customerId,
         customerName: appointment.customerName,
         appointmentDate: toLocalAppointmentDateTime(appointment.appointmentDate),
+        noCharge: appointment.noCharge,
         quotedEstimate: appointment.quotedEstimate,
         travelCharge: appointment.travelCharge,
         additionalCharges: appointment.additionalCharges,
@@ -1478,19 +1543,52 @@ function App() {
       setUser(null)
       setCustomers([])
       setAppointments([])
+      setBlockedDates([])
       setStatusText('Signed out.')
     }
   }
 
   async function handleCustomerSave(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const saved = await runTask('Saving customer…', () => saveCustomer(customerForm))
+    const saved = await runTask('Saving customer…', () =>
+      saveCustomer({
+        ...customerForm,
+        reminderMonths: customerForm.reminderMonths || settings.defaultReminderMonths,
+        followUpWeeks: customerForm.followUpWeeks || settings.defaultFollowUpWeeks,
+      }),
+    )
     if (saved) {
       await refreshData()
       setCustomerForm(emptyCustomerForm(settings))
       setSelectedCustomerId(saved.id)
       setIsCustomerFormOpen(false)
       setStatusText(`Saved ${saved.name}.`)
+    }
+  }
+
+  async function handleBlockedDateSave(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (!blockedDateForm.startDate) {
+      setErrorText('Choose a start date for the blocked date.')
+      return
+    }
+
+    const payload: BlockedDateInput = {
+      ...blockedDateForm,
+      endDate: blockedDateForm.endDate || blockedDateForm.startDate,
+    }
+
+    if (payload.endDate < payload.startDate) {
+      setErrorText('Blocked date end must be on or after the start date.')
+      return
+    }
+
+    const saved = await runTask('Saving blocked date...', () => saveBlockedDate(payload))
+    if (saved) {
+      await refreshData()
+      setBlockedDateForm(emptyBlockedDateForm())
+      setStatusText('Blocked date saved.')
     }
   }
 
@@ -1590,6 +1688,23 @@ function App() {
     })
   }
 
+  function queueDeleteBlockedDateConfirmation(blockedDateId: string) {
+    const blockedDate = blockedDates.find((item) => item.id === blockedDateId)
+    if (!blockedDate) {
+      return
+    }
+
+    setConfirmDialog({
+      title: 'Delete blocked date',
+      message: `Delete the blocked date for ${blockedDate.startDate}${
+        blockedDate.endDate && blockedDate.endDate !== blockedDate.startDate
+          ? ` through ${blockedDate.endDate}`
+          : ''
+      }?`,
+      action: { type: 'delete_blocked_date', blockedDateId },
+    })
+  }
+
   function queueCancelFollowUpConfirmation(appointment: AppointmentRecord) {
     setConfirmDialog({
       title: 'Cancel follow-up reminder',
@@ -1633,6 +1748,20 @@ function App() {
           setIsAppointmentEditing(false)
         }
         setStatusText('Appointment deleted.')
+      }
+      return
+    }
+
+    if (action.type === 'delete_blocked_date') {
+      const removed = await runTask('Deleting blocked date...', () =>
+        deleteBlockedDate(action.blockedDateId),
+      )
+      if (removed !== null) {
+        await refreshData()
+        if (blockedDateForm.id === action.blockedDateId) {
+          setBlockedDateForm(emptyBlockedDateForm())
+        }
+        setStatusText('Blocked date deleted.')
       }
       return
     }
@@ -2531,11 +2660,12 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   <input
                     type="number"
                     min="1"
-                    value={customerForm.reminderMonths}
+                    value={customerForm.reminderMonths === 0 ? '' : customerForm.reminderMonths}
                     onChange={(event) =>
                       setCustomerForm((current) => ({
                         ...current,
-                        reminderMonths: Number(event.target.value),
+                        reminderMonths:
+                          event.target.value === '' ? 0 : Number(event.target.value),
                       }))
                     }
                   />
@@ -2545,11 +2675,12 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   <input
                     type="number"
                     min="1"
-                    value={customerForm.followUpWeeks}
+                    value={customerForm.followUpWeeks === 0 ? '' : customerForm.followUpWeeks}
                     onChange={(event) =>
                       setCustomerForm((current) => ({
                         ...current,
-                        followUpWeeks: Number(event.target.value),
+                        followUpWeeks:
+                          event.target.value === '' ? 0 : Number(event.target.value),
                       }))
                     }
                   />
@@ -2590,6 +2721,15 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     }
                   />
                 </label>
+                <div className="full-width detail-actions">
+                  <button
+                    type="submit"
+                    className="primary-button"
+                    disabled={loading}
+                  >
+                    {customerForm.id ? 'Save customer' : 'Create customer'}
+                  </button>
+                </div>
               </form>
             </article>
           ) : selectedVisibleCustomer ? (
@@ -2598,6 +2738,14 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                 <div>
                   <p className="eyebrow">Customer</p>
                   <h2>{selectedVisibleCustomer.name}</h2>
+                  <button
+                    className="secondary-button customer-detail-primary-action"
+                    onClick={() =>
+                      startNewAppointment(selectedVisibleCustomer, detailOrigin('customers', 'customer'))
+                    }
+                  >
+                    Book appointment
+                  </button>
                 </div>
                 <div className="button-row">
                   <button
@@ -2694,14 +2842,6 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                       <p className="eyebrow">History</p>
                       <h3>Recent appointments</h3>
                     </div>
-                    <button
-                      className="ghost-button"
-                      onClick={() =>
-                        startNewAppointment(selectedVisibleCustomer, detailOrigin('customers', 'customer'))
-                      }
-                    >
-                      Book appointment
-                    </button>
                   </div>
                   <div className="customer-history-list">
                     {customerAppointments(selectedVisibleCustomer.id)
@@ -2886,12 +3026,8 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     <strong className="recent-sales-customer">{appointment.customerName}</strong>
                     <span className="recent-sales-date">{fullDate(appointment.appointmentDate)}</span>
                     <span className="recent-sales-summary">
-                      {currency(
-                        appointment.quotedEstimate +
-                          appointment.travelCharge +
-                          appointment.additionalCharges,
-                      )}{' '}
-                      sales • {currency(appointment.taxAmount)} tax
+                      {currency(taxableSubtotalForAppointment(appointment))}{' '}
+                      sales • {currency(taxForAppointment(appointment))} tax
                     </span>
                   </button>
                 ))}
@@ -3094,6 +3230,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   {calendarDays.map((day) => {
                     const key = format(day, 'yyyy-MM-dd')
                     const dayAppointments = appointmentsByDay[key] ?? []
+                    const dayBlockedDates = blockedDatesByDay[key] ?? []
                     return (
                       <div
                         key={key}
@@ -3107,6 +3244,20 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                       >
                         <div className="calendar-day-label">{format(day, 'd')}</div>
                         <div className="calendar-day-events">
+                          {dayBlockedDates.map((blockedDate) => (
+                            <button
+                              key={blockedDate.id}
+                              type="button"
+                              className="calendar-event calendar-event-blocked"
+                              onClick={() => setBlockedDateForm(blockedDate)}
+                              title={blockedDate.reason || 'Blocked date'}
+                            >
+                              <span className="calendar-event-time">Blocked</span>
+                              <strong className="calendar-event-name">
+                                {blockedDate.reason || 'Unavailable'}
+                              </strong>
+                            </button>
+                          ))}
                           {dayAppointments.slice(0, 3).map((appointment) => (
                             <button
                               key={appointment.id}
@@ -3137,6 +3288,107 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                       </div>
                     )
                   })}
+                </div>
+              </section>
+
+              <section className="schedule-block blocked-date-panel">
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">Availability</p>
+                    <h3>Blocked dates</h3>
+                  </div>
+                  {blockedDateForm.id ? (
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => setBlockedDateForm(emptyBlockedDateForm())}
+                    >
+                      New block
+                    </button>
+                  ) : null}
+                </div>
+                <form className="form-grid blocked-date-form" onSubmit={handleBlockedDateSave}>
+                  <label>
+                    Start date
+                    <input
+                      required
+                      type="date"
+                      value={blockedDateForm.startDate}
+                      onChange={(event) =>
+                        setBlockedDateForm((current) => ({
+                          ...current,
+                          startDate: event.target.value,
+                          endDate:
+                            current.endDate && current.endDate < event.target.value
+                              ? event.target.value
+                              : current.endDate,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    End date
+                    <input
+                      type="date"
+                      value={blockedDateForm.endDate}
+                      onChange={(event) =>
+                        setBlockedDateForm((current) => ({
+                          ...current,
+                          endDate: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="full-width">
+                    Reason
+                    <input
+                      placeholder="Out of town, unavailable, holiday"
+                      value={blockedDateForm.reason}
+                      onChange={(event) =>
+                        setBlockedDateForm((current) => ({
+                          ...current,
+                          reason: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <div className="full-width button-row blocked-date-actions">
+                    <button type="submit" className="primary-button" disabled={loading}>
+                      {blockedDateForm.id ? 'Update block' : 'Create block'}
+                    </button>
+                    {blockedDateForm.id ? (
+                      <button
+                        type="button"
+                        className="ghost-button danger icon-button danger-icon-button"
+                        onClick={() => queueDeleteBlockedDateConfirmation(blockedDateForm.id!)}
+                        aria-label="Delete blocked date"
+                        title="Delete blocked date"
+                      >
+                        <TrashIcon />
+                      </button>
+                    ) : null}
+                  </div>
+                </form>
+                <div className="blocked-date-list">
+                  {blockedDates.map((blockedDate) => (
+                    <button
+                      key={blockedDate.id}
+                      type="button"
+                      className="blocked-date-row"
+                      onClick={() => setBlockedDateForm(blockedDate)}
+                    >
+                      <strong>
+                        {blockedDate.startDate}
+                        {blockedDate.endDate && blockedDate.endDate !== blockedDate.startDate
+                          ? ` to ${blockedDate.endDate}`
+                          : ''}
+                      </strong>
+                      <span>{blockedDate.reason || 'Unavailable'}</span>
+                    </button>
+                  ))}
+                  {blockedDates.length === 0 ? (
+                    <p className="empty-state">No blocked dates yet.</p>
+                  ) : null}
                 </div>
               </section>
             </div>
@@ -3330,6 +3582,37 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     <option value="venmo">Venmo</option>
                   </select>
                 </label>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={appointmentForm.noCharge}
+                    onChange={(event) => {
+                      const noCharge = event.target.checked
+                      setAppointmentForm((current) => ({
+                        ...current,
+                        noCharge,
+                        ...(noCharge
+                          ? {
+                              quotedEstimate: 0,
+                              travelCharge: 0,
+                              additionalCharges: 0,
+                              additionalChargeNote: '',
+                              taxAmount: 0,
+                            }
+                          : {}),
+                      }))
+                      if (noCharge) {
+                        setAppointmentPricingOptions({
+                          travelIncluded: false,
+                          pitchRaiseIncluded: false,
+                          voicingIncluded: false,
+                          repairsAmount: 0,
+                        })
+                      }
+                    }}
+                  />
+                  No charge
+                </label>
                 <div className="full-width pricing-helper-card">
                   <div className="pricing-helper-header">
                     <strong>Flat-fee calculator</strong>
@@ -3412,6 +3695,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                       type="button"
                       className="secondary-button pricing-helper-button"
                       onClick={applyFlatFeePricing}
+                      disabled={appointmentForm.noCharge}
                     >
                       Calculate
                     </button>
@@ -3424,6 +3708,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     type="number"
                     min="0"
                     step="0.01"
+                    disabled={appointmentForm.noCharge}
                     value={
                       appointmentForm.quotedEstimate === 0 ? '' : appointmentForm.quotedEstimate
                     }
@@ -3441,6 +3726,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     type="number"
                     min="0"
                     step="0.01"
+                    disabled={appointmentForm.noCharge}
                     value={appointmentForm.travelCharge === 0 ? '' : appointmentForm.travelCharge}
                     onChange={(event) =>
                       setAppointmentForm((current) => ({
@@ -3456,6 +3742,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     type="number"
                     min="0"
                     step="0.01"
+                    disabled={appointmentForm.noCharge}
                     value={
                       appointmentForm.additionalCharges === 0 ? ''
                         : appointmentForm.additionalCharges
@@ -3473,6 +3760,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   Additional services note
                   <input
                     placeholder="Pitch raise, voicing, repair details, or notes"
+                    disabled={appointmentForm.noCharge}
                     value={appointmentForm.additionalChargeNote}
                     onChange={(event) =>
                       setAppointmentForm((current) => ({
@@ -3490,6 +3778,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                       type="number"
                       min="0"
                       step="0.01"
+                      disabled={appointmentForm.noCharge}
                       value={appointmentForm.taxAmount === 0 ? '' : appointmentForm.taxAmount}
                       onChange={(event) =>
                         setAppointmentForm((current) => ({
@@ -3501,14 +3790,13 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                     <button
                       type="button"
                       className="ghost-button"
+                      disabled={appointmentForm.noCharge}
                       onClick={() =>
                         setAppointmentForm((current) => ({
                           ...current,
                           taxAmount: Number(
                             (
-                              (current.quotedEstimate +
-                                current.travelCharge +
-                                current.additionalCharges) *
+                              taxableSubtotalForAppointment(current) *
                               settings.defaultTaxRate
                             ).toFixed(2),
                           ),

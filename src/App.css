@@ -1219,9 +1219,51 @@
   background: rgba(28, 90, 130, 0.18);
 }
 
+.calendar-event-blocked {
+  background: rgba(143, 45, 30, 0.14);
+  color: #6f2418;
+}
+
 .calendar-overflow {
   color: #645749;
   font-size: 0.75rem;
+}
+
+.blocked-date-panel {
+  align-content: start;
+}
+
+.blocked-date-form {
+  gap: 0.65rem;
+}
+
+.blocked-date-actions {
+  justify-content: flex-start;
+}
+
+.blocked-date-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.blocked-date-row {
+  width: 100%;
+  border: 1px solid rgba(33, 76, 60, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.58);
+  padding: 0.62rem 0.75rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 0.65rem;
+  align-items: center;
+  text-align: left;
+  cursor: pointer;
+}
+
+.blocked-date-row strong,
+.blocked-date-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .appointment-main {
@@ -1325,6 +1367,10 @@
 
 .customer-detail-card {
   margin-top: 0;
+}
+
+.customer-detail-primary-action {
+  margin-top: 0.55rem;
 }
 
 .appointment-detail-card {

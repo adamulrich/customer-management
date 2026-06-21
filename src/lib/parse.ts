@@ -5,6 +5,8 @@ import {
   defaultSettings,
   type AppointmentInput,
   type AppointmentRecord,
+  type BlockedDateInput,
+  type BlockedDateRecord,
   type BusinessSettings,
   type CustomerInput,
   type CustomerRecord,
@@ -14,6 +16,7 @@ import type ParseType from 'parse'
 
 let initialized = false
 const SETTINGS_CLASS = 'Business_Settings'
+const BLOCKED_DATE_CLASS = 'BlockedDate'
 
 const Parse = (globalThis as typeof globalThis & { Parse?: typeof ParseType }).Parse
 
@@ -173,6 +176,7 @@ function toAppointmentRecord(object: Parse.Object): AppointmentRecord {
     customerId: object.get('customerId') ?? '',
     customerName: object.get('customerName') ?? '',
     appointmentDate: toAppointmentDateString(object.get('appointmentDate')),
+    noCharge: object.get('noCharge') === true,
     quotedEstimate: Number(object.get('quotedEstimate') ?? object.get('basePrice') ?? 0),
     travelCharge: Number(object.get('travelCharge') ?? 0),
     additionalCharges: Number(object.get('additionalCharges') ?? 0),
@@ -184,6 +188,17 @@ function toAppointmentRecord(object: Parse.Object): AppointmentRecord {
     invoiceSentAt: toIsoString(object.get('invoiceSentAt')),
     followUpSentAt: toIsoString(object.get('followUpSentAt')),
     followUpCancelledAt: toIsoString(object.get('followUpCancelledAt')),
+    createdAt: object.createdAt?.toISOString() ?? new Date().toISOString(),
+    updatedAt: object.updatedAt?.toISOString() ?? new Date().toISOString(),
+  }
+}
+
+function toBlockedDateRecord(object: Parse.Object): BlockedDateRecord {
+  return {
+    id: object.id ?? '',
+    startDate: object.get('startDate') ?? '',
+    endDate: object.get('endDate') ?? object.get('startDate') ?? '',
+    reason: object.get('reason') ?? '',
     createdAt: object.createdAt?.toISOString() ?? new Date().toISOString(),
     updatedAt: object.updatedAt?.toISOString() ?? new Date().toISOString(),
   }
@@ -325,6 +340,22 @@ export async function fetchAppointments() {
   }
 }
 
+export async function fetchBlockedDates() {
+  requireUser()
+  const query = new Parse.Query(BLOCKED_DATE_CLASS)
+  query.ascending('startDate')
+  query.limit(500)
+  try {
+    const results = await query.find()
+    return results.map(toBlockedDateRecord)
+  } catch (error) {
+    if (isMissingClassError(error)) {
+      return []
+    }
+    throw error
+  }
+}
+
 export async function fetchCommunicationLogs() {
   requireUser()
   const query = new Parse.Query('CommunicationLog')
@@ -373,6 +404,7 @@ export async function saveAppointment(input: AppointmentInput) {
   record.set('customerId', input.customerId)
   record.set('customerName', input.customerName.trim())
   record.set('appointmentDate', appointmentDate)
+  record.set('noCharge', input.noCharge)
   record.set('quotedEstimate', input.quotedEstimate)
   record.set('basePrice', input.quotedEstimate)
   record.set('travelCharge', input.travelCharge)
@@ -385,6 +417,32 @@ export async function saveAppointment(input: AppointmentInput) {
 
   const saved = await record.save()
   return toAppointmentRecord(saved)
+}
+
+export async function saveBlockedDate(input: BlockedDateInput) {
+  const user = requireUser()
+  const record = input.id
+    ? await new Parse.Query(BLOCKED_DATE_CLASS).get(input.id)
+    : new Parse.Object(BLOCKED_DATE_CLASS)
+
+  if (!input.id) {
+    record.setACL(makePrivateAcl(user))
+  }
+
+  record.set('ownerId', user.id)
+  record.set('ownerUsername', user.getUsername())
+  record.set('startDate', input.startDate)
+  record.set('endDate', input.endDate || input.startDate)
+  record.set('reason', input.reason.trim())
+
+  const saved = await record.save()
+  return toBlockedDateRecord(saved)
+}
+
+export async function deleteBlockedDate(blockedDateId: string) {
+  requireUser()
+  const blockedDate = await new Parse.Query(BLOCKED_DATE_CLASS).get(blockedDateId)
+  await blockedDate.destroy()
 }
 
 export async function deleteAppointment(appointmentId: string) {
@@ -492,9 +550,10 @@ export async function saveSettings(input: BusinessSettings) {
 }
 
 export async function createAppBackup(): Promise<AppBackupFile> {
-  const [customers, appointments, communicationLogs, settings] = await Promise.all([
+  const [customers, appointments, blockedDates, communicationLogs, settings] = await Promise.all([
     fetchCustomers(),
     fetchAppointments(),
+    fetchBlockedDates(),
     fetchCommunicationLogs(),
     fetchAllSettingsForBackup(),
   ])
@@ -506,6 +565,7 @@ export async function createAppBackup(): Promise<AppBackupFile> {
     source: 'back4app',
     customers,
     appointments,
+    blockedDates,
     communicationLogs,
     settings,
   }
@@ -547,6 +607,9 @@ export function parseAppBackupFile(contents: string): AppBackupFile {
     source: 'back4app',
     customers: requireArray<CustomerRecord>(parsed.customers, 'customers'),
     appointments: requireArray<AppointmentRecord>(parsed.appointments, 'appointments'),
+    blockedDates: Array.isArray(parsed.blockedDates)
+      ? requireArray<BlockedDateRecord>(parsed.blockedDates, 'blockedDates')
+      : [],
     communicationLogs: requireArray<CommunicationLogRecord>(
       parsed.communicationLogs,
       'communicationLogs',
@@ -561,6 +624,7 @@ export async function restoreAppBackup(backup: AppBackupFile) {
 
   await destroyAllObjects('CommunicationLog')
   await destroyAllObjects('Appointment')
+  await destroyAllObjects(BLOCKED_DATE_CLASS)
   await destroyAllObjects(SETTINGS_CLASS)
   await destroyAllObjects('Customer')
 
@@ -603,6 +667,7 @@ export async function restoreAppBackup(backup: AppBackupFile) {
     record.set('customerId', customerIdMap.get(appointment.customerId) ?? appointment.customerId)
     record.set('customerName', appointment.customerName.trim())
     record.set('appointmentDate', new Date(appointment.appointmentDate))
+    record.set('noCharge', appointment.noCharge === true)
     record.set('quotedEstimate', appointment.quotedEstimate)
     record.set('basePrice', appointment.quotedEstimate)
     record.set('travelCharge', appointment.travelCharge)
@@ -626,6 +691,17 @@ export async function restoreAppBackup(backup: AppBackupFile) {
       throw new Error('Appointment restore failed to return a new object id.')
     }
     appointmentIdMap.set(appointment.id, saved.id)
+  }
+
+  for (const blockedDate of backup.blockedDates ?? []) {
+    const record = new Parse.Object(BLOCKED_DATE_CLASS)
+    record.setACL(makePrivateAcl(user))
+    record.set('ownerId', user.id)
+    record.set('ownerUsername', user.getUsername())
+    record.set('startDate', blockedDate.startDate)
+    record.set('endDate', blockedDate.endDate || blockedDate.startDate)
+    record.set('reason', blockedDate.reason.trim())
+    await record.save()
   }
 
   for (const item of backup.communicationLogs) {

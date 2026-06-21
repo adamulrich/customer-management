@@ -38,6 +38,7 @@ export type AppointmentRecord = {
   customerId: string
   customerName: string
   appointmentDate: string
+  noCharge: boolean
   quotedEstimate: number
   travelCharge: number
   additionalCharges: number
@@ -57,6 +58,19 @@ export type AppointmentInput = Omit<
   AppointmentRecord,
   'id' | 'createdAt' | 'updatedAt' | 'invoiceSentAt' | 'followUpSentAt' | 'followUpCancelledAt'
 > & {
+  id?: string
+}
+
+export type BlockedDateRecord = {
+  id: string
+  startDate: string
+  endDate: string
+  reason: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type BlockedDateInput = Omit<BlockedDateRecord, 'id' | 'createdAt' | 'updatedAt'> & {
   id?: string
 }
 
@@ -108,6 +122,7 @@ export type AppBackupFile = {
   source: 'back4app'
   customers: CustomerRecord[]
   appointments: AppointmentRecord[]
+  blockedDates: BlockedDateRecord[]
   communicationLogs: CommunicationLogRecord[]
   settings: BusinessSettings[]
 }
