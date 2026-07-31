@@ -531,6 +531,11 @@ function mapLink(address: string) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`
 }
 
+function customerCommunicationName(name: string) {
+  const normalized = name.trim().replace(/\s+/g, ' ')
+  return normalized.split(' ')[0] || name
+}
+
 function quartersFromAppointments(appointments: AppointmentRecord[]) {
   const now = new Date()
   return Array.from({ length: 6 }, (_, index) => {
@@ -768,25 +773,6 @@ function App() {
     .filter((item) => item.isDue)
     .sort((left, right) => left.dueDate.getTime() - right.dueDate.getTime())
 
-  const upcomingAppointmentQueue = appointments
-    .filter((appointment) => appointment.status === 'scheduled')
-    .map((appointment) => {
-      const customer = customerMap.get(appointment.customerId)
-      if (!customer) {
-        return null
-      }
-
-      const appointmentDate = parseISO(appointment.appointmentDate)
-      return {
-        appointment,
-        customer,
-        isUpcoming: !isBefore(appointmentDate, new Date()) && !isAfter(appointmentDate, addDays(new Date(), 7)),
-      }
-    })
-    .filter((item): item is NonNullable<typeof item> => Boolean(item))
-    .filter((item) => item.isUpcoming)
-    .sort((left, right) => left.appointment.appointmentDate.localeCompare(right.appointment.appointmentDate))
-
   const latestAppointmentReminderByAppointmentId = communicationLogs
     .filter((item) => item.kind === 'appointment_reminder' && item.appointmentId)
     .reduce<Map<string, CommunicationLogRecord>>((map, item) => {
@@ -796,6 +782,41 @@ function App() {
       }
       return map
     }, new Map())
+
+  const latestAppointmentConfirmationByAppointmentId = communicationLogs
+    .filter((item) => item.kind === 'appointment_confirmation' && item.appointmentId)
+    .reduce<Map<string, CommunicationLogRecord>>((map, item) => {
+      const existing = map.get(item.appointmentId)
+      if (!existing || existing.createdAt < item.createdAt) {
+        map.set(item.appointmentId, item)
+      }
+      return map
+    }, new Map())
+
+  const upcomingAppointmentQueue = appointments
+    .filter((appointment) => appointment.status === 'scheduled')
+    .map((appointment) => {
+      const customer = customerMap.get(appointment.customerId)
+      if (!customer) {
+        return null
+      }
+
+      const appointmentDate = parseISO(appointment.appointmentDate)
+      const isFuture = !isBefore(appointmentDate, new Date())
+      const isInReminderWindow = isFuture && !isAfter(appointmentDate, addDays(new Date(), 7))
+      const lastConfirmation = latestAppointmentConfirmationByAppointmentId.get(appointment.id)
+      const needsConfirmation = isFuture && !lastConfirmation
+
+      return {
+        appointment,
+        customer,
+        isActionable: isInReminderWindow || needsConfirmation,
+        needsConfirmation,
+      }
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .filter((item) => item.isActionable)
+    .sort((left, right) => left.appointment.appointmentDate.localeCompare(right.appointment.appointmentDate))
 
   const marketingTargets = customers
     .filter((customer) => customer.marketingOptIn)
@@ -1996,9 +2017,10 @@ function App() {
     const chargeLines = appointmentChargeDetails(appointment, settings).map(
       ({ label, value }) => `${label}: ${value}`,
     )
+    const customerName = customerCommunicationName(appointment.customerName)
 
     return [
-      `Hi ${appointment.customerName},`,
+      `Hi ${customerName},`,
       '',
       `Thanks for scheduling your piano tuning appointment on ${shortDate(appointment.appointmentDate)}.`,
       ...chargeLines,
@@ -2045,8 +2067,10 @@ function App() {
   }
 
   function invoiceEmailText(appointment: AppointmentRecord) {
+    const customerName = customerCommunicationName(appointment.customerName)
+
     return [
-      `Hi ${appointment.customerName},`,
+      `Hi ${customerName},`,
       '',
       `Thanks for scheduling your piano tuning appointment on ${shortDate(appointment.appointmentDate)}.`,
       '',
@@ -2060,7 +2084,7 @@ function App() {
   function appointmentCommunicationDetails(customer: CustomerRecord, appointment: AppointmentRecord) {
     return [
       { label: 'Date / time', value: fullDate(appointment.appointmentDate) },
-      { label: 'Name', value: customer.name },
+      { label: 'Name', value: customerCommunicationName(customer.name) },
       { label: 'Address', value: customer.address || 'No address on file' },
       { label: 'Quoted price', value: currency(totalForAppointment(appointment)) },
     ]
@@ -2069,7 +2093,7 @@ function App() {
   function invoiceComposerDetails(customer: CustomerRecord, appointment: AppointmentRecord) {
     return [
       { label: 'Date / time', value: fullDate(appointment.appointmentDate) },
-      { label: 'Name', value: customer.name },
+      { label: 'Name', value: customerCommunicationName(customer.name) },
       { label: 'Address', value: customer.address || 'No address on file' },
       ...appointmentChargeDetails(appointment, settings),
     ]
@@ -2117,8 +2141,10 @@ function App() {
   }
 
   function appointmentConfirmationText(customer: CustomerRecord) {
+    const customerName = customerCommunicationName(customer.name)
+
     return [
-      `Hi ${customer.name},`,
+      `Hi ${customerName},`,
       '',
       'Your piano tuning appointment is confirmed. Here are the details I have on the calendar.',
       appointmentChangeNote(),
@@ -2131,8 +2157,10 @@ function App() {
   }
 
   function appointmentReminderText(customer: CustomerRecord) {
+    const customerName = customerCommunicationName(customer.name)
+
     return [
-      `Hi ${customer.name},`,
+      `Hi ${customerName},`,
       '',
       'This is a reminder for your upcoming piano tuning appointment. Here are the details I have on the calendar.',
       appointmentChangeNote(),
@@ -2145,12 +2173,14 @@ function App() {
   }
 
   function appointmentConfirmationSms(customer: CustomerRecord, appointment: AppointmentRecord) {
+    const customerName = customerCommunicationName(customer.name)
+
     return [
-      `Hi ${customer.name},`,
+      `Hi ${customerName},`,
       '',
       'Your piano tuning appointment is confirmed:',
       `Date/Time: ${fullDate(appointment.appointmentDate)}`,
-      `Name: ${customer.name}`,
+      `Name: ${customerName}`,
       `Address: ${customer.address || 'No address on file'}`,
       `Quoted price: ${currency(totalForAppointment(appointment))}`,
       appointmentChangeNote(),
@@ -2161,12 +2191,14 @@ function App() {
   }
 
   function appointmentReminderSms(customer: CustomerRecord, appointment: AppointmentRecord) {
+    const customerName = customerCommunicationName(customer.name)
+
     return [
-      `Hi ${customer.name},`,
+      `Hi ${customerName},`,
       '',
       'This is a reminder for your upcoming piano tuning appointment:',
       `Date/Time: ${fullDate(appointment.appointmentDate)}`,
-      `Name: ${customer.name}`,
+      `Name: ${customerName}`,
       `Address: ${customer.address || 'No address on file'}`,
       `Quoted price: ${currency(totalForAppointment(appointment))}`,
       appointmentChangeNote(),
@@ -2354,8 +2386,10 @@ function App() {
   }
 
   function reminderEmailText(customer: CustomerRecord, appointment: AppointmentRecord) {
+    const customerName = customerCommunicationName(customer.name)
+
     return [
-      `Hi ${customer.name},`,
+      `Hi ${customerName},`,
       '',
       `It has been ${differenceInCalendarDays(new Date(), parseISO(appointment.appointmentDate))} days since your last piano tuning on ${shortDate(appointment.appointmentDate)}.`,
       'Would you like to get your next tuning on the calendar?',
@@ -2365,8 +2399,10 @@ function App() {
   }
 
   function reminderSmsText(customer: CustomerRecord, appointment: AppointmentRecord) {
+    const customerName = customerCommunicationName(customer.name)
+
     return [
-      `Hi ${customer.name},`,
+      `Hi ${customerName},`,
       '',
       `It has been ${differenceInCalendarDays(new Date(), parseISO(appointment.appointmentDate))} days since your last piano tuning on ${shortDate(appointment.appointmentDate)}.`,
       'Would you like to get your next tuning on the calendar?',
@@ -2378,8 +2414,10 @@ function App() {
   }
 
   function followUpText(customer: CustomerRecord, appointment: AppointmentRecord) {
+    const customerName = customerCommunicationName(customer.name)
+
     return [
-      `Hi ${customer.name},`,
+      `Hi ${customerName},`,
       '',
       `Just checking in after your piano tuning on ${shortDate(appointment.appointmentDate)}.`,
       'Is the piano still working well? Any concerns I can help with?',
@@ -3774,7 +3812,6 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                   Tax amount
                   <div className="inline-field">
                     <input
-                      required
                       type="number"
                       min="0"
                       step="0.01"
@@ -4066,7 +4103,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
               </div>
             </div>
             <div className="queue-list">
-              {upcomingAppointmentQueue.map(({ appointment, customer }) => {
+              {upcomingAppointmentQueue.map(({ appointment, customer, needsConfirmation }) => {
                 const lastReminder = latestAppointmentReminderByAppointmentId.get(appointment.id)
 
                 return (
@@ -4082,7 +4119,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                       <span>{fullDate(appointment.appointmentDate)}</span>
                       <span>{customer.address || 'No address on file'}</span>
                       <span>
-                        {lastReminder
+                        {needsConfirmation
+                          ? 'Confirmation not sent yet'
+                          : lastReminder
                           ? `Last reminder ${communicationChannelLabel(lastReminder.channel).toLowerCase()} ${shortDate(lastReminder.createdAt)}`
                           : 'No reminder sent yet'}
                       </span>
@@ -4100,7 +4139,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         <button
                           className="secondary-button"
                           onClick={() =>
-                            openUpcomingAppointmentReminderComposer('email', customer, appointment)
+                            needsConfirmation
+                              ? openAppointmentConfirmationComposer('email', customer, appointment)
+                              : openUpcomingAppointmentReminderComposer('email', customer, appointment)
                           }
                         >
                           Email
@@ -4110,7 +4151,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         <button
                           className="secondary-button"
                           onClick={() =>
-                            openUpcomingAppointmentReminderComposer('sms', customer, appointment)
+                            needsConfirmation
+                              ? openAppointmentConfirmationComposer('sms', customer, appointment)
+                              : openUpcomingAppointmentReminderComposer('sms', customer, appointment)
                           }
                         >
                           Text
@@ -4121,7 +4164,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                 )
               })}
               {upcomingAppointmentQueue.length === 0 ? (
-                <p className="empty-state">No upcoming scheduled appointments in the next week.</p>
+                <p className="empty-state">No future appointments need a confirmation or reminder right now.</p>
               ) : null}
             </div>
           </article>
@@ -4459,7 +4502,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
               </div>
             </div>
             <div className="queue-list">
-              {upcomingAppointmentQueue.map(({ appointment, customer }) => {
+              {upcomingAppointmentQueue.map(({ appointment, customer, needsConfirmation }) => {
                 const lastReminder = latestAppointmentReminderByAppointmentId.get(appointment.id)
 
                 return (
@@ -4475,7 +4518,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                       <span>{fullDate(appointment.appointmentDate)}</span>
                       <span>{customer.address || 'No address on file'}</span>
                       <span>
-                        {lastReminder
+                        {needsConfirmation
+                          ? 'Confirmation not sent yet'
+                          : lastReminder
                           ? `Last reminder ${communicationChannelLabel(lastReminder.channel).toLowerCase()} ${shortDate(lastReminder.createdAt)}`
                           : 'No reminder sent yet'}
                       </span>
@@ -4491,7 +4536,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         <button
                           className="secondary-button"
                           onClick={() =>
-                            openUpcomingAppointmentReminderComposer('email', customer, appointment)
+                            needsConfirmation
+                              ? openAppointmentConfirmationComposer('email', customer, appointment)
+                              : openUpcomingAppointmentReminderComposer('email', customer, appointment)
                           }
                         >
                           Email
@@ -4501,7 +4548,9 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                         <button
                           className="secondary-button"
                           onClick={() =>
-                            openUpcomingAppointmentReminderComposer('sms', customer, appointment)
+                            needsConfirmation
+                              ? openAppointmentConfirmationComposer('sms', customer, appointment)
+                              : openUpcomingAppointmentReminderComposer('sms', customer, appointment)
                           }
                         >
                           Text
@@ -4512,7 +4561,7 @@ VITE_PARSE_SERVER_URL=https://parseapi.back4app.com/`}</pre>
                 )
               })}
               {upcomingAppointmentQueue.length === 0 ? (
-                <p className="empty-state">No upcoming scheduled appointments in the next week.</p>
+                <p className="empty-state">No future appointments need a confirmation or reminder right now.</p>
               ) : null}
             </div>
           </article>
